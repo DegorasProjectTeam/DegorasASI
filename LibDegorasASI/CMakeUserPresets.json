@@ -1,0 +1,31 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "local-mingw-dynamic-deb",
+      "displayName": "Local MSYS2 UCRT64 — Shared Debug",
+      "inherits": "mingw-dynamic-deb",
+      "environment": { "MINGW_ROOT": "E:/msys64/ucrt64" }
+    },
+    {
+      "name": "local-mingw-dynamic-rel",
+      "displayName": "Local MSYS2 UCRT64 — Shared Release",
+      "inherits": "mingw-dynamic-rel",
+      "environment": { "MINGW_ROOT": "E:/msys64/ucrt64" }
+    },
+    {
+      "name": "local-mingw-static-deb",
+      "displayName": "Local MSYS2 UCRT64 — Static Debug",
+      "inherits": "mingw-static-deb",
+      "environment": { "MINGW_ROOT": "E:/msys64/ucrt64" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "local-mingw-dynamic-deb", "configurePreset": "local-mingw-dynamic-deb" },
+    { "name": "local-mingw-dynamic-rel", "configurePreset": "local-mingw-dynamic-rel" },
+    { "name": "local-mingw-static-deb",  "configurePreset": "local-mingw-static-deb" }
+  ],
+  "testPresets": [
+    { "name": "local-mingw-dynamic-deb", "configurePreset": "local-mingw-dynamic-deb", "output": { "outputOnFailure": true } }
+  ]
+}

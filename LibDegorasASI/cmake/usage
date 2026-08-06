@@ -1,0 +1,16 @@
+The package degorasasi provides CMake targets:
+
+    find_package(DegorasASI CONFIG REQUIRED)
+    target_link_libraries(main PRIVATE Degoras::ASI)
+
+Runtime requirement: this library controls ZWO ASI astronomy cameras and depends on the proprietary ZWO ASI Camera
+SDK. The ASICamera2 runtime library must be discoverable at run time (install the ZWO driver package, or keep
+ASICamera2.dll / libASICamera2.so on PATH / LD_LIBRARY_PATH / next to your executable).
+
+ABI note: the public API passes C++ standard-library types across the library boundary, so consumers MUST use a
+toolchain and standard-library implementation compatible with the one the library was built with. This constrains
+LINKAGE, not platform: the library itself carries no platform lock, and MinGW/UCRT64 on Windows is the reference
+(validated) toolchain.
+
+Static builds only: the ASI import library must also be locatable at link time. Set ASI_SDK_ROOT (CMake or
+environment variable) to the SDK root if it is not auto-detected.

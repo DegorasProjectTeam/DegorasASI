@@ -1,0 +1,75 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/../build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_COLOR_DIAGNOSTICS": "ON",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "mingw",
+      "hidden": true,
+      "inherits": "base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/dp_windows_mingw.cmake"
+      }
+    },
+    {
+      "name": "mingw-dynamic-deb",
+      "displayName": "MinGW Shared Debug",
+      "inherits": "mingw",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "LIBDEGORASASI_BUILD_SHARED": "ON" }
+    },
+    {
+      "name": "mingw-dynamic-rel",
+      "displayName": "MinGW Shared Release",
+      "inherits": "mingw",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "LIBDEGORASASI_BUILD_SHARED": "ON" }
+    },
+    {
+      "name": "mingw-static-deb",
+      "displayName": "MinGW Static Debug",
+      "inherits": "mingw",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "LIBDEGORASASI_BUILD_SHARED": "OFF" }
+    },
+    {
+      "name": "mingw-static-rel",
+      "displayName": "MinGW Static Release",
+      "inherits": "mingw",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "LIBDEGORASASI_BUILD_SHARED": "OFF" }
+    },
+    {
+      "name": "unix-dynamic-deb",
+      "displayName": "Unix Shared Debug (host toolchain)",
+      "inherits": "base",
+      "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "LIBDEGORASASI_BUILD_SHARED": "ON" }
+    },
+    {
+      "name": "unix-dynamic-rel",
+      "displayName": "Unix Shared Release (host toolchain)",
+      "inherits": "base",
+      "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "LIBDEGORASASI_BUILD_SHARED": "ON" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "mingw-dynamic-deb", "configurePreset": "mingw-dynamic-deb", "verbose": true },
+    { "name": "mingw-dynamic-rel", "configurePreset": "mingw-dynamic-rel", "verbose": true },
+    { "name": "mingw-static-deb",  "configurePreset": "mingw-static-deb",  "verbose": true },
+    { "name": "mingw-static-rel",  "configurePreset": "mingw-static-rel",  "verbose": true },
+    { "name": "unix-dynamic-deb",  "configurePreset": "unix-dynamic-deb",  "verbose": true },
+    { "name": "unix-dynamic-rel",  "configurePreset": "unix-dynamic-rel",  "verbose": true }
+  ],
+  "testPresets": [
+    { "name": "mingw-dynamic-deb", "configurePreset": "mingw-dynamic-deb", "output": { "outputOnFailure": true } },
+    { "name": "mingw-dynamic-rel", "configurePreset": "mingw-dynamic-rel", "output": { "outputOnFailure": true } }
+  ]
+}
