@@ -57,6 +57,19 @@ find_library(ASICamera_LIBRARY
 
 set(CMAKE_FIND_LIBRARY_SUFFIXES "${_asi_saved_suffixes}")
 
+# The vendored tree carries only the payload for the platform it was populated for. Finding the header but not a
+# library for this architecture is the ordinary "the SDK for this platform has not been vendored yet" case, and the
+# stock message ("missing: ASICamera_LIBRARY") does not say so. Point the reader at the fix instead.
+if(ASICamera_INCLUDE_DIR AND NOT ASICamera_LIBRARY)
+    message(STATUS
+        "FindASICamera: found ASICamera2.h under '${ASICamera_INCLUDE_DIR}' but no ASICamera2 library for this "
+        "platform/architecture (searched: ${_asi_arch_suffixes}).\n"
+        "   ZWO publishes the SDK per platform: the Windows package ships lib/<arch>/ASICamera2.{lib,dll}, and the "
+        "'ASI Camera SDK [Linux & macOS]' package ships lib/<arch>/libASICamera2.so for x64, armv6, armv7, armv8 and "
+        "mac. Drop the matching lib/<arch>/ payload into the vendored SDK root, or point ASI_SDK_ROOT at a system "
+        "install (on Debian/Ubuntu, the libasicamera2 package).")
+endif()
+
 include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(ASICamera
     REQUIRED_VARS

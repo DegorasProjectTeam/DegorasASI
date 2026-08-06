@@ -46,7 +46,6 @@ Installed layout (relative to the prefix):
 | `LIBDEGORASASI_INSTALL_ASI_RUNTIME` | ON | Install the vendored ZWO runtime library into `bin/` |
 | `LIBDEGORASASI_BUILD_DOCS` | OFF | Install `README.md` into the doc dir |
 | `LIBDEGORASASI_INSTALL_EXAMPLES` | OFF | Install the example sources |
-| `LIBDEGORASASI_BUILD_TOOLS` | OFF | Build/install CLI tools (none yet) |
 | `LIBDEGORASASI_BUILD_TESTING` | ON | Build tests and register them with CTest |
 | `LIBDEGORASASI_BUILD_EXAMPLES` | ON | Build the example executables |
 
@@ -128,6 +127,14 @@ can be dropped in unmodified:
 | `thirdparty/ASI/include/ASICamera2.h` | the entire C API |
 | `thirdparty/ASI/lib/x64/`, `lib/x86/` | import library + runtime, per architecture |
 | `thirdparty/ASI/license.txt`, `Version_<x>` | vendor licence and the vendored SDK version marker |
+
+**Building on Linux or macOS.** ZWO publishes a separate *ASI Camera SDK [Linux & macOS]* package, which lays its
+payload out the same way — `lib/<arch>/libASICamera2.so` for `x64`, `armv6`, `armv7`, `armv8` and `mac`. Drop that
+`lib/<arch>/` directory into the vendored SDK root, or point `ASI_SDK_ROOT` at a system install (Debian and Ubuntu
+package it as `libasicamera2`). `FindASICamera.cmake` already selects by architecture, and the `unix-dynamic-*`
+presets then configure unchanged; only the vendored payload is Windows-specific, never the source. Note the vendored
+tree here carries the Windows payload only, so a Unix build needs that step first — the Find module says as much if
+the library for the host architecture is missing.
 
 Everything else the vendor ships — its PDF documentation and its MFC/OpenCV sample application — lives at the
 **repository root** under `reference/`, outside the CMake project and gitignored. It is kept for consultation but is not
