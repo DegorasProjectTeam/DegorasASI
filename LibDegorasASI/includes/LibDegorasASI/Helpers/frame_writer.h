@@ -25,6 +25,7 @@
 
 // C++ INCLUDES
 #include <string>
+#include <vector>
 
 // PROJECT INCLUDES
 #include "LibDegorasASI/Global/libdegorasasi_export.h"
@@ -77,9 +78,60 @@ LIBDEGORASASI_EXPORT bool writeBmp(const types::Frame& frame, const std::string&
  */
 LIBDEGORASASI_EXPORT bool writePgm(const types::Frame& frame, const std::string& path);
 
+// -- FITS ------------------------------------------------------------------------------------------------------------
+//
+// The archival format for astronomy, and the reason this module carries a third writer: BMP and PGM are for looking at
+// a frame, FITS is for keeping it. Everything a pipeline needs later -- when it was taken, how long for, at what gain,
+// which Bayer mosaic to demosaic with -- travels inside the file rather than in a filename convention.
+
+/// One FITS header card. Build these with @ref fitsInt, @ref fitsReal or @ref fitsText rather than by hand, so the
+/// value is formatted the way the standard requires.
+struct LIBDEGORASASI_EXPORT FitsCard
+{
+    std::string key;       ///< Keyword, up to 8 characters. Lower case is upper-cased on the way out.
+    std::string value;     ///< Value, already formatted for FITS (quoted for text, bare for numbers).
+    std::string comment;   ///< Optional comment; truncated if the card would exceed its 80 columns.
+};
+
+using FitsCards = std::vector<FitsCard>;   ///< Extra cards to record alongside the mandatory ones.
+
+/// @brief A card holding an integer, e.g. fitsInt("GAIN", 450, "sensor gain").
+LIBDEGORASASI_EXPORT FitsCard fitsInt(const std::string& key, long long value, const std::string& comment = {});
+
+/// @brief A card holding a floating-point value, e.g. fitsReal("EXPTIME", 0.2, "exposure time in seconds").
+LIBDEGORASASI_EXPORT FitsCard fitsReal(const std::string& key, double value, const std::string& comment = {});
+
+/// @brief A card holding text, e.g. fitsText("BAYERPAT", "RGGB", "colour filter array"). Quoting is handled here.
+LIBDEGORASASI_EXPORT FitsCard fitsText(const std::string& key, const std::string& value,
+                                       const std::string& comment = {});
+
+/**
+ * @brief Write a frame as a FITS image.
+ * @param frame The frame to write. Any of RAW8, Y8, RAW16 or RGB24.
+ * @param path Destination path.
+ * @param extra Extra header cards, written after the mandatory ones. Exposure, gain, sensor temperature and the Bayer
+ *        pattern belong here: the frame itself does not carry them, and a FITS without them is far less useful to
+ *        whatever reads it years later.
+ * @return False if the frame is empty or inconsistent, or the file could not be written.
+ *
+ * @note Layout follows the standard: 2880-byte blocks, big-endian samples, and the first axis varying fastest. Rows go
+ *       out BOTTOM-UP, which is the near-universal convention astronomy software expects, and the same order BMP uses.
+ * @note 8-bit frames are written as BITPIX 8. RAW16 is written as BITPIX 16 with BZERO 32768, because that BITPIX is
+ *       SIGNED in FITS while the sensor data is unsigned; readers apply BZERO automatically, so the values come back
+ *       unchanged. RGB24 becomes a three-plane cube (NAXIS3 = 3) de-interleaved into R, G, B plane order -- FITS
+ *       stores colour plane by plane, and the SDK delivers it interleaved as B,G,R.
+ * @warning A RAW8 or RAW16 frame from a colour camera is Bayer-mosaiced. Pass the pattern in @p extra as a BAYERPAT
+ *          card so a reader can demosaic it; without one it will be shown as grey.
+ */
+LIBDEGORASASI_EXPORT bool writeFits(const types::Frame& frame, const std::string& path,
+                                    const FitsCards& extra = FitsCards());
+
+// -- Dispatch ----------------------------------------------------------------------------------------------------------
+
 /**
  * @brief Write a frame with whichever writer fits its format: BMP for RGB24, PGM otherwise.
  * @return False if the format is not one this module writes, or the file could not be written.
+ * @note Chooses the format meant for LOOKING at a frame. Call @ref writeFits directly when the frame is being kept.
  */
 LIBDEGORASASI_EXPORT bool writeFrame(const types::Frame& frame, const std::string& path);
 

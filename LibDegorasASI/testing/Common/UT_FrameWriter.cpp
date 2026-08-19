@@ -234,6 +234,203 @@ void testWriteFrameDispatch()
     std::remove(pgm.c_str());
 }
 
+/// Read a FITS keyword's raw value text from the 80-column cards, or an empty string if absent.
+std::string fitsValue(const std::vector<std::uint8_t>& d, const std::string& key)
+{
+    for (std::size_t at = 0; at + 80 <= d.size(); at += 80)
+    {
+        const std::string card(d.begin() + at, d.begin() + at + 80);
+        if (card.compare(0, 3, "END") == 0)
+            break;
+        std::string name = card.substr(0, 8);
+        while (!name.empty() && name.back() == ' ')
+            name.pop_back();
+        if (name != key)
+            continue;
+        // A text value ends at its closing quote, NOT at column 30: the comment starts right after it. Slicing a fixed
+        // 20 columns would drag part of the comment in.
+        const std::string rest = card.substr(10);
+        const std::size_t begin = rest.find_first_not_of(' ');
+        if (begin == std::string::npos)
+            return std::string();
+        if (rest[begin] == '\'')
+        {
+            const std::size_t close = rest.find('\'', begin + 1);
+            return (close == std::string::npos) ? std::string() : rest.substr(begin, close - begin + 1);
+        }
+        std::string value = rest.substr(begin, rest.find(" /", begin) - begin);
+        const std::size_t last = value.find_last_not_of(' ');
+        return (last == std::string::npos) ? std::string() : value.substr(0, last + 1);
+    }
+    return std::string();
+}
+
+std::size_t fitsHeaderBytes(const std::vector<std::uint8_t>& d)
+{
+    for (std::size_t at = 0; at + 80 <= d.size(); at += 80)
+        if (std::string(d.begin() + at, d.begin() + at + 3) == "END")
+            return ((at + 80 + 2879) / 2880) * 2880;
+    return 0;
+}
+
+void testFitsStructure()
+{
+    std::cout << "  FITS block structure and mandatory cards\n";
+
+    const Frame frame = makeFrame(ImageFormat::RAW8, 16, 8);
+    const std::string path = "ut_frame_writer.fits";
+    assert(imgio::writeFits(frame, path));
+
+    const std::vector<std::uint8_t> d = readFile(path);
+
+    // The whole file is a whole number of 2880-byte blocks: header AND data. A file that is not is simply not FITS.
+    assert(d.size() % 2880 == 0);
+    const std::size_t header_bytes = fitsHeaderBytes(d);
+    assert(header_bytes > 0 && header_bytes % 2880 == 0);
+
+    // Every card is exactly 80 columns, and the mandatory ones come first and in order.
+    assert(fitsValue(d, "SIMPLE") == "T");
+    assert(fitsValue(d, "BITPIX") == "8");
+    assert(fitsValue(d, "NAXIS") == "2");
+    assert(fitsValue(d, "NAXIS1") == "16");
+    assert(fitsValue(d, "NAXIS2") == "8");
+    assert(fitsValue(d, "BZERO").empty());        // 8-bit FITS is already unsigned; no bias needed
+    assert(!fitsValue(d, "DATE-OBS").empty());
+
+    // Header padding is SPACES, data padding is zeros: the standard is specific about each.
+    assert(d[header_bytes - 1] == ' ');
+    std::remove(path.c_str());
+}
+
+void testFitsRowOrderAndValues()
+{
+    std::cout << "  FITS row order and 8-bit samples\n";
+
+    const int w = 16, h = 8;
+    const Frame frame = makeFrame(ImageFormat::RAW8, w, h);
+    const std::string path = "ut_frame_writer_rows.fits";
+    assert(imgio::writeFits(frame, path));
+
+    const std::vector<std::uint8_t> d = readFile(path);
+    const std::size_t at = fitsHeaderBytes(d);
+
+    // Rows go out BOTTOM-UP, the convention astronomy software expects: the first row of DATA is the LAST row of the
+    // frame. Getting this backwards flips every image vertically, which is easy to miss on a symmetric scene.
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+            assert(d[at + static_cast<std::size_t>(y) * w + x] ==
+                   frame.data[static_cast<std::size_t>(h - 1 - y) * w + x]);
+    std::remove(path.c_str());
+}
+
+void testFits16BitBiasRoundTrips()
+{
+    std::cout << "  FITS 16-bit BZERO round-trip\n";
+
+    const int w = 8, h = 4;
+    Frame frame;
+    frame.format = ImageFormat::RAW16;
+    frame.width = w; frame.height = h; frame.bin = 1;
+    frame.data.resize(frame.expectedBytes());
+
+    // Values spanning the whole unsigned range, including both ends, since those are exactly what a naive signed
+    // BITPIX 16 would mangle.
+    const std::vector<std::uint16_t> values = {0, 1, 32767, 32768, 32769, 65534, 65535, 12345,
+                                               100, 200, 300, 400, 500, 600, 700, 800,
+                                               900, 1000, 1100, 1200, 1300, 1400, 1500, 1600,
+                                               1700, 1800, 1900, 2000, 2100, 2200, 2300, 2400};
+    for (std::size_t i = 0; i < values.size(); ++i)
+    {
+        frame.data[i * 2]     = static_cast<PixelByte>(values[i] & 0xFF);
+        frame.data[i * 2 + 1] = static_cast<PixelByte>((values[i] >> 8) & 0xFF);
+    }
+
+    const std::string path = "ut_frame_writer_16.fits";
+    assert(imgio::writeFits(frame, path));
+
+    const std::vector<std::uint8_t> d = readFile(path);
+    assert(fitsValue(d, "BITPIX") == "16");
+    assert(fitsValue(d, "BZERO") == "32768");    // BITPIX 16 is SIGNED in FITS; the bias makes it carry unsigned data
+    assert(fitsValue(d, "BSCALE") == "1");
+
+    // Undo what a reader does -- big-endian signed, plus BZERO -- and the original values must come back exactly.
+    const std::size_t at = fitsHeaderBytes(d);
+    for (int y = 0; y < h; ++y)
+    {
+        for (int x = 0; x < w; ++x)
+        {
+            const std::size_t out_at = at + (static_cast<std::size_t>(y) * w + x) * 2u;
+            const int stored = static_cast<std::int16_t>((d[out_at] << 8) | d[out_at + 1]);
+            const int recovered = stored + 32768;
+            const std::size_t src = (static_cast<std::size_t>(h - 1 - y) * w + x) * 2u;   // bottom-up
+            const int original = frame.data[src] | (frame.data[src + 1] << 8);
+            assert(recovered == original);
+        }
+    }
+    std::remove(path.c_str());
+}
+
+void testFitsColourPlanes()
+{
+    std::cout << "  FITS colour de-interleaving\n";
+
+    const int w = 8, h = 4;
+    const Frame frame = makeFrame(ImageFormat::RGB24, w, h);
+    const std::string path = "ut_frame_writer_rgb.fits";
+    assert(imgio::writeFits(frame, path));
+
+    const std::vector<std::uint8_t> d = readFile(path);
+    assert(fitsValue(d, "NAXIS") == "3");
+    assert(fitsValue(d, "NAXIS3") == "3");
+
+    // FITS stores colour PLANE BY PLANE in R,G,B order, while the SDK delivers pixels interleaved as B,G,R. Both the
+    // de-interleaving and the channel reversal have to happen, and getting only one of them right swaps red and blue.
+    const std::size_t at = fitsHeaderBytes(d);
+    const std::size_t plane = static_cast<std::size_t>(w) * h;
+    for (int p = 0; p < 3; ++p)
+    {
+        const std::size_t channel = static_cast<std::size_t>(2 - p);   // plane 0 is R, which is byte 2 of B,G,R
+        for (int y = 0; y < h; ++y)
+        {
+            for (int x = 0; x < w; ++x)
+            {
+                const std::uint8_t got = d[at + p * plane + static_cast<std::size_t>(y) * w + x];
+                const std::size_t src = (static_cast<std::size_t>(h - 1 - y) * w + x) * 3u + channel;
+                assert(got == frame.data[src]);
+            }
+        }
+    }
+    std::remove(path.c_str());
+}
+
+void testFitsCards()
+{
+    std::cout << "  FITS card formatting\n";
+
+    const Frame frame = makeFrame(ImageFormat::RAW8, 8, 4);
+    const std::string path = "ut_frame_writer_cards.fits";
+    imgio::FitsCards extra;
+    extra.push_back(imgio::fitsInt("GAIN", 450, "sensor gain"));
+    extra.push_back(imgio::fitsReal("EXPTIME", 0.25, "seconds"));
+    extra.push_back(imgio::fitsText("BAYERPAT", "RGGB", "colour filter array"));
+    extra.push_back(imgio::fitsText("LONGNAME", "a value that is definitely longer than eight characters"));
+    assert(imgio::writeFits(frame, path, extra));
+
+    const std::vector<std::uint8_t> d = readFile(path);
+    assert(fitsValue(d, "GAIN") == "450");
+    assert(fitsValue(d, "EXPTIME") == "0.25");
+    assert(fitsValue(d, "BAYERPAT") == "'RGGB    '");     // text is quoted and padded to eight characters
+
+    // Every card must be exactly 80 columns, or every card after it is misaligned.
+    const std::size_t header_bytes = fitsHeaderBytes(d);
+    assert(header_bytes % 80 == 0);
+    for (std::size_t at = 0; at + 80 <= header_bytes; at += 80)
+        for (std::size_t i = 0; i < 80; ++i)
+            assert(d[at + i] >= 32 && d[at + i] <= 126);   // printable ASCII only, as the standard requires
+
+    std::remove(path.c_str());
+}
+
 void testPreview()
 {
     std::cout << "  ASCII preview\n";
@@ -277,6 +474,11 @@ int main()
     testPgm16BitIsByteSwapped();
     testWrongFormatsAreRefused();
     testWriteFrameDispatch();
+    testFitsStructure();
+    testFitsRowOrderAndValues();
+    testFits16BitBiasRoundTrips();
+    testFitsColourPlanes();
+    testFitsCards();
     testPreview();
 
     std::cout << "UT_FrameWriter: ALL CHECKS PASSED" << std::endl;

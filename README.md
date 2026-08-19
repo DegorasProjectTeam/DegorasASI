@@ -201,9 +201,20 @@ own is **what the vendor never documented about its own pixel data**, because a 
 gets silently wrong images until it does. `Helpers/frame_writer.h` is therefore part of the library:
 
 ```cpp
-imgio::writeFrame(frame, "shot.bmp");        // BMP for RGB24, PGM for RAW8 / RAW16 / Y8
+imgio::writeFrame(frame, "shot.bmp");        // BMP for RGB24, PGM for RAW8 / RAW16 / Y8 -- for LOOKING at
 std::cout << imgio::framePreview(frame, 72); // an ASCII brightness map, returned as a string
+
+imgio::FitsCards cards;                      // and FITS -- for KEEPING
+cards.push_back(imgio::fitsReal("EXPTIME", 0.2, "exposure time in seconds"));
+cards.push_back(imgio::fitsInt("GAIN", 450));
+cards.push_back(imgio::fitsText("BAYERPAT", "RGGB"));   // so a reader can demosaic a raw colour frame
+imgio::writeFits(frame, "shot.fits", cards);
 ```
+
+FITS is the archival half: 2880-byte blocks, big-endian, bottom-up rows, RGB24 de-interleaved into R/G/B planes, and
+RAW16 written as `BITPIX 16` with `BZERO 32768` because that BITPIX is *signed* in FITS while sensor data is not.
+Everything a pipeline needs later travels inside the file rather than in a filename convention. Verified against
+**astropy** in strict mode, with the pixels cross-checked plane by plane against the BMP of the same frame.
 
 Nothing there needs more than `<fstream>`. `asi_camera_view` is the example to run first on new hardware: it prints
 the brightness map, so *"is the camera seeing anything?"* is answered before any file is opened, then saves a

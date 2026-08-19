@@ -22,7 +22,11 @@
  */
 
 // C++ INCLUDES
+#include <cctype>
+#include <chrono>
 #include <cstddef>
+#include <cstdio>
+#include <ctime>
 #include <cstdint>
 #include <fstream>
 #include <vector>
@@ -114,6 +118,10 @@ bool writeBmp(const types::Frame& frame, const std::string& path)
         if (padding != 0)
             out.write(pad.data(), static_cast<std::streamsize>(padding));
     }
+
+    // Closed explicitly: out.good() before the destructor runs would report success while the last block was still
+    // buffered, so a disk that filled up mid-write would look like a clean save.
+    out.close();
     return out.good();
 }
 
@@ -145,6 +153,198 @@ bool writePgm(const types::Frame& frame, const std::string& path)
             out.put(static_cast<char>(frame.data[i]));
         }
     }
+
+    out.close();   // see writeBmp: report only what actually reached the disk
+    return out.good();
+}
+
+// -- FITS ------------------------------------------------------------------------------------------------------------
+
+namespace
+{
+
+constexpr std::size_t kFitsCardLen = 80;     // every header card is exactly 80 characters
+constexpr std::size_t kFitsBlockLen = 2880;  // and the file is a whole number of 2880-byte blocks
+
+/// Format one card the way the standard lays it out: keyword in columns 1-8, "= " in 9-10, value from column 11.
+std::string fitsCardText(const FitsCard& card)
+{
+    std::string key = card.key.substr(0, 8);
+    for (char& c : key)
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    key.resize(8, ' ');
+
+    std::string text = key + "= ";
+    // Numbers are right-justified through column 30, text is left-justified from column 11: both are what readers
+    // expect, and misaligning them is the classic way to produce a file that some tools reject.
+    const bool is_text = !card.value.empty() && card.value.front() == '\'';
+    if (is_text)
+        text += card.value;
+    else
+        text += std::string(card.value.size() < 20 ? 20 - card.value.size() : 0, ' ') + card.value;
+
+    if (!card.comment.empty() && text.size() + 3 < kFitsCardLen)
+        text += " / " + card.comment;
+
+    text.resize(kFitsCardLen, ' ');   // truncates an over-long comment, which is the harmless half of the card
+    return text;
+}
+
+/// A FITS text value: single-quoted, padded to at least 8 characters, with embedded quotes doubled.
+std::string fitsQuote(const std::string& value)
+{
+    std::string escaped;
+    for (const char c : value)
+    {
+        escaped += c;
+        if (c == '\'')
+            escaped += c;
+    }
+    if (escaped.size() < 8)
+        escaped.resize(8, ' ');
+    return "'" + escaped + "'";
+}
+
+/// The frame's timestamp as the FITS DATE-OBS form, yyyy-mm-ddThh:mm:ss.sss in UTC.
+std::string fitsDateObs(const std::chrono::system_clock::time_point& stamp)
+{
+    const std::time_t secs = std::chrono::system_clock::to_time_t(stamp);
+    std::tm utc{};
+#if defined(_WIN32)
+    gmtime_s(&utc, &secs);
+#else
+    gmtime_r(&secs, &utc);
+#endif
+    const auto since = stamp.time_since_epoch();
+    const long long millis = std::chrono::duration_cast<std::chrono::milliseconds>(since).count() % 1000;
+
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02d.%03lld",
+                  utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday,
+                  utc.tm_hour, utc.tm_min, utc.tm_sec, millis);
+    return std::string(buf);
+}
+
+} // namespace
+
+FitsCard fitsInt(const std::string& key, long long value, const std::string& comment)
+{
+    return FitsCard{key, std::to_string(value), comment};
+}
+
+FitsCard fitsReal(const std::string& key, double value, const std::string& comment)
+{
+    char buf[40];
+    std::snprintf(buf, sizeof(buf), "%.10G", value);
+    return FitsCard{key, std::string(buf), comment};
+}
+
+FitsCard fitsText(const std::string& key, const std::string& value, const std::string& comment)
+{
+    return FitsCard{key, fitsQuote(value), comment};
+}
+
+bool writeFits(const types::Frame& frame, const std::string& path, const FitsCards& extra)
+{
+    if (!isConsistent(frame))
+        return false;
+
+    const bool sixteen_bit = (frame.format == types::ImageFormat::RAW16);
+    const bool colour = (frame.format == types::ImageFormat::RGB24);
+    if (!sixteen_bit && !colour && frame.format != types::ImageFormat::RAW8 &&
+        frame.format != types::ImageFormat::Y8)
+        return false;
+
+    // -- Header --------------------------------------------------------------------------------------------------
+    // The mandatory cards come first and in this order; anything else may follow, and END closes the header.
+    FitsCards cards;
+    cards.push_back(FitsCard{"SIMPLE", "T", "conforms to FITS standard"});
+    cards.push_back(fitsInt("BITPIX", sixteen_bit ? 16 : 8, "bits per sample"));
+    cards.push_back(fitsInt("NAXIS", colour ? 3 : 2, "number of axes"));
+    cards.push_back(fitsInt("NAXIS1", frame.width, "image width"));
+    cards.push_back(fitsInt("NAXIS2", frame.height, "image height"));
+    if (colour)
+        cards.push_back(fitsInt("NAXIS3", 3, "colour planes, in R G B order"));
+
+    if (sixteen_bit)
+    {
+        // BITPIX 16 is SIGNED in FITS while the sensor data is unsigned, so the samples are stored biased and the
+        // reader undoes it. Every FITS reader applies BZERO, so the values come back exactly as captured.
+        cards.push_back(fitsInt("BZERO", 32768, "unsigned samples stored as signed"));
+        cards.push_back(fitsInt("BSCALE", 1, ""));
+    }
+
+    cards.push_back(fitsText("DATE-OBS", fitsDateObs(frame.timestamp), "UTC at frame retrieval"));
+    if (frame.bin > 1)
+    {
+        cards.push_back(fitsInt("XBINNING", frame.bin, "horizontal binning"));
+        cards.push_back(fitsInt("YBINNING", frame.bin, "vertical binning"));
+    }
+    cards.push_back(fitsText("CREATOR", "LibDegorasASI", "writing software"));
+    cards.insert(cards.end(), extra.begin(), extra.end());
+
+    std::string header;
+    for (const FitsCard& card : cards)
+        header += fitsCardText(card);
+    header += std::string("END") + std::string(kFitsCardLen - 3, ' ');
+    header.resize(((header.size() + kFitsBlockLen - 1) / kFitsBlockLen) * kFitsBlockLen, ' ');
+
+    std::ofstream out(path, std::ios::binary);
+    if (!out)
+        return false;
+    out.write(header.data(), static_cast<std::streamsize>(header.size()));
+
+    // -- Data ----------------------------------------------------------------------------------------------------
+    // Big-endian, first axis varying fastest, rows BOTTOM-UP. Colour is stored plane by plane, not interleaved, so
+    // the SDK's interleaved B,G,R has to be taken apart and emitted as R, then G, then B.
+    std::string data;
+    const std::size_t sample_bytes = sixteen_bit ? 2u : 1u;
+    data.reserve(static_cast<std::size_t>(frame.width) * frame.height * (colour ? 3u : 1u) * sample_bytes);
+
+    const std::size_t row_bytes = static_cast<std::size_t>(frame.width) * types::bytesPerPixel(frame.format);
+
+    if (colour)
+    {
+        for (int plane = 0; plane < 3; ++plane)
+        {
+            const std::size_t channel = static_cast<std::size_t>(2 - plane);   // R,G,B out of B,G,R
+            for (int y = frame.height - 1; y >= 0; --y)
+            {
+                const std::size_t row_at = static_cast<std::size_t>(y) * row_bytes;
+                for (int x = 0; x < frame.width; ++x)
+                    data += static_cast<char>(frame.data[row_at + static_cast<std::size_t>(x) * 3u + channel]);
+            }
+        }
+    }
+    else
+    {
+        for (int y = frame.height - 1; y >= 0; --y)
+        {
+            const std::size_t row_at = static_cast<std::size_t>(y) * row_bytes;
+            if (!sixteen_bit)
+            {
+                data.append(reinterpret_cast<const char*>(frame.data.data() + row_at), row_bytes);
+            }
+            else
+            {
+                for (int x = 0; x < frame.width; ++x)
+                {
+                    const std::size_t at = row_at + static_cast<std::size_t>(x) * 2u;
+                    const int biased = static_cast<int>(frame.data[at] | (frame.data[at + 1] << 8)) - 32768;
+                    data += static_cast<char>((biased >> 8) & 0xFF);   // big-endian, high byte first
+                    data += static_cast<char>(biased & 0xFF);
+                }
+            }
+        }
+    }
+
+    const std::size_t tail = data.size() % kFitsBlockLen;
+    if (tail != 0)
+        data.resize(data.size() + (kFitsBlockLen - tail), '\0');   // blocks are padded with zeros, headers with spaces
+
+    out.write(data.data(), static_cast<std::streamsize>(data.size()));
+
+    out.close();   // see writeBmp: report only what actually reached the disk
     return out.good();
 }
 

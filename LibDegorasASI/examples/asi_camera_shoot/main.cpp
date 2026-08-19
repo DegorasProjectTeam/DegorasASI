@@ -24,6 +24,7 @@
 // C++ INCLUDES
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <string>
 
@@ -46,6 +47,7 @@
 //     --output <stem>     output file stem                    (default "shot")
 //     --camera <id>       camera identifier                   (default: the first discovered)
 //     --no-preview        skip the terminal brightness map
+//     --fits              also write a FITS alongside, with exposure, gain, temperature and Bayer pattern
 
 using namespace dpasi;
 using dpasi::types::OperationResult;
@@ -62,6 +64,7 @@ struct Options
     std::string output = "shot";
     int camera = -1;              // negative means "the first discovered"
     bool preview = true;
+    bool fits = false;
 };
 
 bool parseFormat(const std::string& text, types::ImageFormat& out)
@@ -82,6 +85,7 @@ bool parseArgs(int argc, char* argv[], Options& opt)
         const bool has_value = (i + 1 < argc);
 
         if (arg == "--no-preview")            { opt.preview = false; }
+        else if (arg == "--fits")             { opt.fits = true; }
         else if (arg == "--exposure" && has_value) { opt.exposure_ms = std::atoi(argv[++i]); }
         else if (arg == "--gain" && has_value)     { opt.gain = std::atoll(argv[++i]); }
         else if (arg == "--format" && has_value)   { opt.format = argv[++i]; }
@@ -243,14 +247,42 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    const std::string path = opt.output + "." + imgio::extensionFor(frame.format);
-    const bool written = imgio::writeFrame(frame, path);
     std::cout << "  captured " << frame.width << "x" << frame.height << " " << types::toString(frame.format)
-              << ", " << frame.data.size() << " bytes -> " << (written ? path : std::string("WRITE FAILED")) << "\n";
+              << ", " << frame.data.size() << " bytes\n";
 
     double celsius = 0;
-    if (camera.getSensorTemperature(celsius) == OperationResult::OPERATION_OK)
+    const bool has_temp = (camera.getSensorTemperature(celsius) == OperationResult::OPERATION_OK);
+    if (has_temp)
         std::cout << "  sensor temperature: " << celsius << " C\n";
+
+    // The viewable file. Absolute, because a bare relative name leaves the reader hunting through a build directory.
+    const std::string path = opt.output + "." + imgio::extensionFor(frame.format);
+    const bool written = imgio::writeFrame(frame, path);
+    std::cout << "  saved: " << (written ? std::filesystem::absolute(path).string()
+                                         : std::string("WRITE FAILED (" + path + ")")) << "\n";
+
+    // The archival file. Everything a pipeline needs later goes INSIDE it rather than into a filename convention:
+    // when it was taken, how long for, at what gain, and -- for a raw colour frame -- which mosaic to demosaic with.
+    if (opt.fits)
+    {
+        imgio::FitsCards cards;
+        cards.push_back(imgio::fitsReal("EXPTIME", opt.exposure_ms / 1000.0, "exposure time in seconds"));
+        cards.push_back(imgio::fitsText("INSTRUME", desc.name, "camera model"));
+        if (opt.gain >= 0)
+            cards.push_back(imgio::fitsInt("GAIN", opt.gain, "sensor gain"));
+        if (has_temp)
+            cards.push_back(imgio::fitsReal("CCD-TEMP", celsius, "sensor temperature in C"));
+
+        // Only meaningful on a raw frame: RGB24 has already been demosaiced by the SDK.
+        if (desc.is_colour && frame.format != types::ImageFormat::RGB24)
+            cards.push_back(imgio::fitsText("BAYERPAT", types::toString(desc.bayer_pattern) + "GB",
+                                            "colour filter array"));
+
+        const std::string fits_path = opt.output + ".fits";
+        const bool fits_written = imgio::writeFits(frame, fits_path, cards);
+        std::cout << "  saved: " << (fits_written ? std::filesystem::absolute(fits_path).string()
+                                                  : std::string("WRITE FAILED (" + fits_path + ")")) << "\n";
+    }
 
     if (opt.preview)
     {
