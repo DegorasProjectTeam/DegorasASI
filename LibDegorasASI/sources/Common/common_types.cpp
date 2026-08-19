@@ -489,6 +489,8 @@ Frame::Frame() :
     width(0),
     height(0),
     bin(1),
+    start_x(0),
+    start_y(0),
     sequence(0),
     timestamp(),
     data()
@@ -520,6 +522,8 @@ std::string Frame::toJsonStr(bool pretty) const
     ss << "\"width\": " << this->width << ",";
     ss << "\"height\": " << this->height << ",";
     ss << "\"bin\": " << this->bin << ",";
+    ss << "\"start_x\": " << this->start_x << ",";
+    ss << "\"start_y\": " << this->start_y << ",";
     ss << "\"sequence\": " << this->sequence << ",";
     ss << "\"timestamp_us\": " << stamp_us << ",";
     ss << "\"bytes\": " << this->data.size();

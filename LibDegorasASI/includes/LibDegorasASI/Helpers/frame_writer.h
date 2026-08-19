@@ -101,9 +101,20 @@ LIBDEGORASASI_EXPORT FitsCard fitsInt(const std::string& key, long long value, c
 /// @brief A card holding a floating-point value, e.g. fitsReal("EXPTIME", 0.2, "exposure time in seconds").
 LIBDEGORASASI_EXPORT FitsCard fitsReal(const std::string& key, double value, const std::string& comment = {});
 
-/// @brief A card holding text, e.g. fitsText("BAYERPAT", "RGGB", "colour filter array"). Quoting is handled here.
+/// @brief A card holding text, e.g. fitsText("OBJECT", "M31", "target"). Quoting is handled here.
 LIBDEGORASASI_EXPORT FitsCard fitsText(const std::string& key, const std::string& value,
                                        const std::string& comment = {});
+
+/**
+ * @brief The BAYERPAT card for a colour sensor's mosaic, e.g. BayerPattern::RG becomes "RGGB".
+ * @note Use this rather than building the string from types::toString(). The SDK names a pattern by its first ROW
+ *       ("RG"), FITS by the whole 2x2 CELL ("RGGB"), and only RG is completed by "GB" -- appending it to the others
+ *       produces BGGB, GRGB and GBGB, which are not Bayer patterns.
+ * @note The name is the mosaic at the SENSOR'S TOP-LEFT, which is what the convention means and what a datasheet
+ *       quotes. @ref writeFits stores rows top-down and says so, so this needs no adjustment for orientation.
+ * @warning Meaningful only on a raw frame from a colour camera at bin 1. @ref writeFits drops the card otherwise.
+ */
+LIBDEGORASASI_EXPORT FitsCard fitsBayerPattern(types::BayerPattern pattern);
 
 /**
  * @brief Write a frame as a FITS image.
@@ -115,7 +126,13 @@ LIBDEGORASASI_EXPORT FitsCard fitsText(const std::string& key, const std::string
  * @return False if the frame is empty or inconsistent, or the file could not be written.
  *
  * @note Layout follows the standard: 2880-byte blocks, big-endian samples, and the first axis varying fastest. Rows go
- *       out BOTTOM-UP, which is the near-universal convention astronomy software expects, and the same order BMP uses.
+ *       out TOP-DOWN -- as the sensor delivers them -- and a ROWORDER card says so. FITS is often said to put the
+ *       first pixel at the lower left, but the standard does not require it: that is a recommendation from WCS Paper
+ *       I, and practice went the other way. Siril, PixInsight, DeepSkyStacker, ASTAP and KStars all assume TOP-DOWN
+ *       when ROWORDER is absent, and ZWO's ASIStudio does not read the card at all. Storing rows bottom-up would
+ *       therefore be wrong for every reader, and on a colour camera it would also shift the Bayer mosaic by one row.
+ * @note Siril renders every image bottom-up, so it displays these frames inverted -- as it does for INDI, N.I.N.A.
+ *       and SharpCap files, for the same reason. The colour is right, which is what the mosaic phase governs.
  * @note Samples are ALWAYS written as BITPIX 16, including for an 8-bit frame, with BZERO 32768 because that BITPIX is
  *       SIGNED in FITS while sensor data is unsigned; readers apply BZERO automatically, so the values come back
  *       unchanged. BITPIX 8 is perfectly legal and would be the obvious choice for an 8-bit frame, but 8-bit FITS is
@@ -125,8 +142,15 @@ LIBDEGORASASI_EXPORT FitsCard fitsText(const std::string& key, const std::string
  *       range actually present so a viewer can scale its display.
  * @note RGB24 becomes a three-plane cube (NAXIS3 = 3) de-interleaved into R, G, B plane order -- FITS stores colour
  *       plane by plane, and the SDK delivers it interleaved as B,G,R.
- * @warning A RAW8 or RAW16 frame from a colour camera is Bayer-mosaiced. Pass the pattern in @p extra as a BAYERPAT
- *          card so a reader can demosaic it; without one it will be shown as grey.
+ * @warning A RAW8 or RAW16 frame from a colour camera is Bayer-mosaiced. Pass the pattern in @p extra by calling
+ *          @ref fitsBayerPattern; without it the frame will be shown as grey.
+ * @note A BAYERPAT card in @p extra is DROPPED when the frame is binned or is RGB24, because neither carries a mosaic
+ *       any more: binning sums neighbouring photosites and the SDK has already demosaiced RGB24. Labelling either
+ *       would make a reader invent colour from data that has none.
+ * @note XBAYROFF and YBAYROFF are always DERIVED from the frame's own @ref types::Frame::start_x and start_y and are
+ *       never taken from @p extra, so a windowed capture at an odd origin -- which the vendor accepts silently, and
+ *       which shifts the mosaic by one photosite -- stays correctly labelled without the caller having to know. They
+ *       are written only alongside a surviving BAYERPAT, since with no mosaic they mean nothing.
  */
 LIBDEGORASASI_EXPORT bool writeFits(const types::Frame& frame, const std::string& path,
                                     const FitsCards& extra = FitsCards());

@@ -166,6 +166,17 @@ OperationResult AsiCamera::doConnect(const DeviceConfig& cfg)
     if (cfg.disable_dark_subtract)
         this->ctrl_.disableDarkSubtract();
 
+    // Same reasoning, and the same non-fatal treatment: FLIP persists too, ASIStudio sets it from a menu, and a
+    // mirrored buffer shifts the Bayer mosaic as surely as reversing the rows does. Written through the control API
+    // rather than doSetFlip() because the connection is not published yet, so the public method would refuse.
+    if (cfg.reset_flip)
+    {
+        ControlValue none;
+        none.value = static_cast<ControlRaw>(toType(FlipMode::NONE));
+        none.is_auto = false;
+        this->ctrl_.writeControl(ControlType::FLIP, none);
+    }
+
     {
         const std::lock_guard<std::mutex> lock(this->state_mtx_);
         this->descriptor_ = descriptor;

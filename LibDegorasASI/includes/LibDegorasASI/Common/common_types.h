@@ -398,6 +398,14 @@ struct LIBDEGORASASI_EXPORT Frame
     int width;                                           ///< Frame width in pixels.
     int height;                                          ///< Frame height in pixels.
     int bin;                                             ///< Binning factor the frame was acquired with.
+
+    /// @brief Where on the sensor the frame's first pixel came from, in post-binning coordinates.
+    /// @note Carried so a frame is self-describing: without it a windowed capture cannot be matched against a dark or
+    ///       a flat, and -- on a colour camera -- an ODD origin shifts the Bayer mosaic by one photosite, which
+    ///       silently mis-colours anything that demosaics the frame. The vendor accepts an odd origin without
+    ///       complaint, so the offset has to travel with the pixels rather than be assumed to be zero.
+    int start_x;
+    int start_y;                                         ///< See @ref start_x.
     std::uint64_t sequence;                              ///< Monotonic counter, incremented per delivered frame.
     std::chrono::system_clock::time_point timestamp;     ///< Host time at which the frame was retrieved.
     std::vector<PixelByte> data;                                    ///< The image bytes.

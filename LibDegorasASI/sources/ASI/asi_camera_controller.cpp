@@ -368,6 +368,23 @@ DeviceError AsiCameraController::prepareFrame(Frame& out_frame)
     out_frame.height = roi.height;
     out_frame.bin = roi.bin;
 
+    // The origin travels with the pixels. It is not needed to size the buffer, but without it the frame cannot say
+    // WHERE on the sensor it came from -- which a dark or a flat has to match, and which decides the Bayer phase: the
+    // vendor accepts an odd origin without complaint, and an odd one shifts the mosaic by a photosite. A failure to
+    // read it is not fatal to the capture, so the origin falls back to the sensor corner rather than losing the frame.
+    // Takes cameraMtx, exactly as readRoiFormat above does, and callers hold acquisitionMtx -- the documented order.
+    RoiPosition pos;
+    if (this->readRoiPosition(pos).ok())
+    {
+        out_frame.start_x = pos.start_x;
+        out_frame.start_y = pos.start_y;
+    }
+    else
+    {
+        out_frame.start_x = 0;
+        out_frame.start_y = 0;
+    }
+
     // Grow only when the geometry demands it, so a steady stream reuses one allocation and costs no per-frame malloc.
     if (out_frame.data.size() != required)
         out_frame.data.resize(required);

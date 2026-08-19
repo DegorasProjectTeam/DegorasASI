@@ -273,10 +273,10 @@ int main(int argc, char* argv[])
         if (has_temp)
             cards.push_back(imgio::fitsReal("CCD-TEMP", celsius, "sensor temperature in C"));
 
-        // Only meaningful on a raw frame: RGB24 has already been demosaiced by the SDK.
-        if (desc.is_colour && frame.format != types::ImageFormat::RGB24)
-            cards.push_back(imgio::fitsText("BAYERPAT", types::toString(desc.bayer_pattern) + "GB",
-                                            "colour filter array"));
+        // Only meaningful on a raw frame from a colour sensor: RGB24 is already demosaiced and binning destroys the
+        // mosaic outright. writeFits drops the card in both cases anyway, so this guard is belt to its braces.
+        if (desc.is_colour && frame.format != types::ImageFormat::RGB24 && frame.bin == 1)
+            cards.push_back(imgio::fitsBayerPattern(desc.bayer_pattern));
 
         const std::string fits_path = opt.output + ".fits";
         const bool fits_written = imgio::writeFits(frame, fits_path, cards);

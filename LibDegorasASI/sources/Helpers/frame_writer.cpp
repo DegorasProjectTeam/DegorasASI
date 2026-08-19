@@ -163,6 +163,14 @@ bool writePgm(const types::Frame& frame, const std::string& path)
 namespace
 {
 
+/// Which photosite of the 2x2 mosaic cell an axis starts on. Written as a loop-free positive modulo because
+/// Frame is a plain struct a caller may fill by hand, and C++ gives a NEGATIVE remainder for a negative left
+/// operand -- an XBAYROFF of -1 would be rejected or misread rather than merely wrong.
+int mosaicOffset(int start)
+{
+    return ((start % 2) + 2) % 2;
+}
+
 constexpr std::size_t kFitsCardLen = 80;     // every header card is exactly 80 characters
 constexpr std::size_t kFitsBlockLen = 2880;  // and the file is a whole number of 2880-byte blocks
 
@@ -244,6 +252,24 @@ FitsCard fitsText(const std::string& key, const std::string& value, const std::s
     return FitsCard{key, fitsQuote(value), comment};
 }
 
+FitsCard fitsBayerPattern(types::BayerPattern pattern)
+{
+    // The four names spelled out, NOT built by appending to toString(pattern). The SDK names a pattern by its first
+    // ROW ("RG", "BG", ...) while FITS names it by the whole 2x2 CELL, and the second row is not the same for all
+    // four: only RG happens to be completed by "GB". Appending it blindly yields BGGB, GRGB and GBGB, none of which
+    // are Bayer patterns at all -- a reader meeting one falls back to its own guess, which is how a mosaic error
+    // reaches a file that looks correctly labelled.
+    const char* name = "RGGB";
+    switch (pattern)
+    {
+        case types::BayerPattern::RG: name = "RGGB"; break;
+        case types::BayerPattern::BG: name = "BGGR"; break;
+        case types::BayerPattern::GR: name = "GRBG"; break;
+        case types::BayerPattern::GB: name = "GBRG"; break;
+    }
+    return fitsText("BAYERPAT", name, "colour filter array, sensor top-left");
+}
+
 bool writeFits(const types::Frame& frame, const std::string& path, const FitsCards& extra)
 {
     if (!isConsistent(frame))
@@ -301,7 +327,48 @@ bool writeFits(const types::Frame& frame, const std::string& path, const FitsCar
         cards.push_back(fitsInt("YBINNING", frame.bin, "vertical binning"));
     }
     cards.push_back(fitsText("CREATOR", "LibDegorasASI", "writing software"));
-    cards.insert(cards.end(), extra.begin(), extra.end());
+
+    // Says which end of the sensor the first stored row came from, so a reader can place the image the right way up
+    // AND work out the phase of the colour mosaic. Without it the two are unrecoverable: see the block above the data
+    // loop for why this is the single most important card in the file for a colour camera.
+    cards.push_back(fitsText("ROWORDER", "TOP-DOWN", "first stored row is the sensor top row"));
+
+    // A BAYERPAT on a binned frame is a lie the writer refuses to tell. Binning sums neighbouring photosites, which
+    // destroys the mosaic: the result is a grey image, and a reader that believes the card will demosaic noise into
+    // false colour. The caller cannot be trusted to remember this, and the frame knows its own binning, so the card
+    // is dropped here rather than in every caller. Same for RGB24, which the SDK has already demosaiced.
+    const bool mosaic_gone = (frame.bin > 1) || colour;
+    bool wrote_mosaic = false;
+    for (const FitsCard& card : extra)
+    {
+        // Matched the way the card will actually be WRITTEN -- truncated to eight columns and upper-cased, exactly as
+        // fitsCardText() does it. Comparing the caller's spelling instead would let "bayerpat" slip through the guard
+        // and still land in the file as BAYERPAT.
+        std::string key = card.key.substr(0, 8);
+        for (char& c : key)
+            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+
+        if (mosaic_gone && key == "BAYERPAT")
+            continue;
+
+        // The offsets are never taken from the caller: the frame carries its own origin, and a stale or guessed
+        // offset is worse than none. They are re-derived below from what the frame actually says.
+        if (key == "XBAYROFF" || key == "YBAYROFF")
+            continue;
+
+        cards.push_back(card);
+        wrote_mosaic = wrote_mosaic || (key == "BAYERPAT");
+    }
+
+    // A windowed capture whose origin is ODD starts on a different photosite of the 2x2 cell, which shifts the mosaic
+    // exactly as reversing the rows would. The vendor accepts an odd origin without complaint and says nothing about
+    // it, so the only safe assumption is none: derive the offset from the frame and let the reader apply it. Written
+    // only alongside a BAYERPAT, since without a mosaic the cards mean nothing.
+    if (wrote_mosaic)
+    {
+        cards.push_back(fitsInt("XBAYROFF", mosaicOffset(frame.start_x), "mosaic column offset of the first pixel"));
+        cards.push_back(fitsInt("YBAYROFF", mosaicOffset(frame.start_y), "mosaic row offset of the first pixel"));
+    }
 
     std::string header;
     for (const FitsCard& card : cards)
@@ -315,8 +382,24 @@ bool writeFits(const types::Frame& frame, const std::string& path, const FitsCar
     out.write(header.data(), static_cast<std::streamsize>(header.size()));
 
     // -- Data ----------------------------------------------------------------------------------------------------
-    // Big-endian, first axis varying fastest, rows BOTTOM-UP. Colour is stored plane by plane, not interleaved, so
-    // the SDK's interleaved B,G,R has to be taken apart and emitted as R, then G, then B.
+    // Big-endian, first axis varying fastest, rows TOP-DOWN -- stored exactly as the sensor delivers them, and
+    // declared as such by the ROWORDER card above. Colour is stored plane by plane, not interleaved, so the SDK's
+    // interleaved B,G,R has to be taken apart and emitted as R, then G, then B.
+    //
+    // TOP-DOWN rather than the bottom-up "first pixel at lower left" that FITS is famous for, and this cost us a bug
+    // worth recording. That rule is NOT in the standard: FITS 4.0 mandates only that axis 1 varies fastest, and the
+    // lower-left recommendation comes from WCS Paper I section 5.1, which calls it "a convention of convenience".
+    // What the standard leaves open, practice has closed the other way -- every reader checked (Siril, PixInsight,
+    // DeepSkyStacker, ASTAP, KStars) assumes TOP-DOWN when ROWORDER is absent, because that is what camera drivers
+    // emit, and ZWO's own ASIStudio does not implement ROWORDER at all.
+    //
+    // On a colour camera this is not cosmetic. Reversing the rows shifts the Bayer mosaic by one row whenever the
+    // height is even -- which is always, since isRoiAligned() requires it -- turning a native RGGB sensor into GBRG
+    // in the file. Declare RGGB over that and a reader fills its red channel from green photosites: measured on an
+    // ASI224MC, a red source came out green. Storing the rows as the sensor sends them makes the declared pattern
+    // true by construction, with no dependence on the height being even and none on ROWORDER surviving downstream
+    // (ASTAP strips it on purpose). The cost is that Siril, which always renders bottom-up, displays the frame
+    // inverted -- as it does for every INDI, N.I.N.A. and SharpCap file, for the same reason.
     std::string data;
     data.reserve(static_cast<std::size_t>(frame.width) * frame.height * (colour ? 3u : 1u) * 2u);
 
@@ -335,7 +418,7 @@ bool writeFits(const types::Frame& frame, const std::string& path, const FitsCar
         for (int plane = 0; plane < 3; ++plane)
         {
             const std::size_t channel = static_cast<std::size_t>(2 - plane);   // R,G,B out of B,G,R
-            for (int y = frame.height - 1; y >= 0; --y)
+            for (int y = 0; y < frame.height; ++y)
             {
                 const std::size_t row_at = static_cast<std::size_t>(y) * row_bytes;
                 for (int x = 0; x < frame.width; ++x)
@@ -345,7 +428,7 @@ bool writeFits(const types::Frame& frame, const std::string& path, const FitsCar
     }
     else
     {
-        for (int y = frame.height - 1; y >= 0; --y)
+        for (int y = 0; y < frame.height; ++y)
         {
             const std::size_t row_at = static_cast<std::size_t>(y) * row_bytes;
             for (int x = 0; x < frame.width; ++x)

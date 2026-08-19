@@ -324,12 +324,17 @@ void testFitsRowOrderAndValues()
     const std::vector<std::uint8_t> d = readFile(path);
     const std::size_t at = fitsHeaderBytes(d);
 
-    // Rows go out BOTTOM-UP, the convention astronomy software expects: the first row of DATA is the LAST row of the
-    // frame. Getting this backwards flips every image vertically, which is easy to miss on a symmetric scene.
+    // Rows go out TOP-DOWN, exactly as the sensor delivers them: the first row of DATA is the FIRST row of the frame.
+    // This is not a free choice. Reversing them would shift the Bayer mosaic by one row on any even height -- which
+    // is every height, since isRoiAligned() demands it -- and readers assume top-down when ROWORDER is absent, so a
+    // reversed frame would come out both upside down and mis-coloured. Measured on an ASI224MC: red rendered green.
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x)
             assert(fitsSample(d, at + (static_cast<std::size_t>(y) * w + x) * 2u) ==
-                   frame.data[static_cast<std::size_t>(h - 1 - y) * w + x]);
+                   frame.data[static_cast<std::size_t>(y) * w + x]);
+
+    // And the file must SAY so, or the order is unrecoverable and every reader falls back to a guess.
+    assert(fitsValue(d, "ROWORDER") == "'TOP-DOWN'");
     std::remove(path.c_str());
 }
 
@@ -370,7 +375,7 @@ void testFits16BitBiasRoundTrips()
         for (int x = 0; x < w; ++x)
         {
             const int recovered = fitsSample(d, at + (static_cast<std::size_t>(y) * w + x) * 2u);
-            const std::size_t src = (static_cast<std::size_t>(h - 1 - y) * w + x) * 2u;   // bottom-up
+            const std::size_t src = (static_cast<std::size_t>(y) * w + x) * 2u;   // top-down
             assert(recovered == (frame.data[src] | (frame.data[src + 1] << 8)));
         }
     }
@@ -402,12 +407,99 @@ void testFitsColourPlanes()
             for (int x = 0; x < w; ++x)
             {
                 const int got = fitsSample(d, at + (p * plane + static_cast<std::size_t>(y) * w + x) * 2u);
-                const std::size_t src = (static_cast<std::size_t>(h - 1 - y) * w + x) * 3u + channel;
+                const std::size_t src = (static_cast<std::size_t>(y) * w + x) * 3u + channel;
                 assert(got == frame.data[src]);
             }
         }
     }
     std::remove(path.c_str());
+}
+
+void testFitsBayerPatternNames()
+{
+    std::cout << "  FITS BAYERPAT names all four mosaics\n";
+
+    // The bug this pins down: the SDK names a pattern by its first ROW, FITS by the whole 2x2 CELL, and only RG is
+    // completed by "GB". Building the string as toString(pattern) + "GB" gave RGGB, BGGB, GRGB, GBGB -- three of
+    // which are not Bayer patterns at all. It went unnoticed because the camera on the bench is an RG sensor.
+    const struct { BayerPattern pattern; const char* name; } expected[] = {
+        {BayerPattern::RG, "RGGB"},
+        {BayerPattern::BG, "BGGR"},
+        {BayerPattern::GR, "GRBG"},
+        {BayerPattern::GB, "GBRG"},
+    };
+    for (const auto& e : expected)
+    {
+        const imgio::FitsCard card = imgio::fitsBayerPattern(e.pattern);
+        assert(card.key == "BAYERPAT");
+        assert(card.value.find(e.name) != std::string::npos);
+    }
+}
+
+void testFitsDropsMosaicCardWhenThereIsNoMosaic()
+{
+    std::cout << "  FITS drops BAYERPAT when binned or already demosaiced\n";
+
+    imgio::FitsCards cards;
+    cards.push_back(imgio::fitsBayerPattern(BayerPattern::RG));
+
+    // Binning sums neighbouring photosites, so the mosaic is gone however the caller labels the frame.
+    Frame binned = makeFrame(ImageFormat::RAW8, 8, 4);
+    binned.bin = 2;
+    const std::string binned_path = "ut_frame_writer_binned.fits";
+    assert(imgio::writeFits(binned, binned_path, cards));
+    assert(fitsValue(readFile(binned_path), "BAYERPAT").empty());
+    std::remove(binned_path.c_str());
+
+    // RGB24 has already been demosaiced by the SDK; labelling it would have a reader demosaic it twice.
+    const Frame colour = makeFrame(ImageFormat::RGB24, 8, 4);
+    const std::string colour_path = "ut_frame_writer_demosaiced.fits";
+    assert(imgio::writeFits(colour, colour_path, cards));
+    assert(fitsValue(readFile(colour_path), "BAYERPAT").empty());
+    std::remove(colour_path.c_str());
+
+    // But an unbinned raw frame keeps it, or the reader has no way to recover colour at all.
+    const Frame raw = makeFrame(ImageFormat::RAW8, 8, 4);
+    const std::string raw_path = "ut_frame_writer_mosaic.fits";
+    assert(imgio::writeFits(raw, raw_path, cards));
+    const std::vector<std::uint8_t> raw_d = readFile(raw_path);
+    assert(fitsValue(raw_d, "BAYERPAT") == "'RGGB    '");
+    assert(fitsValue(raw_d, "XBAYROFF") == "0");     // full frame: the mosaic starts where the sensor does
+    assert(fitsValue(raw_d, "YBAYROFF") == "0");
+    std::remove(raw_path.c_str());
+}
+
+void testFitsMosaicOffsetFollowsRoiOrigin()
+{
+    std::cout << "  FITS mosaic offset follows an odd ROI origin\n";
+
+    imgio::FitsCards cards;
+    cards.push_back(imgio::fitsBayerPattern(BayerPattern::RG));
+    // A caller's own offsets are ignored: the frame knows where it came from, and a stale guess is worse than none.
+    cards.push_back(imgio::fitsInt("XBAYROFF", 7, "nonsense a caller should not be able to inject"));
+
+    // An ODD origin starts the window on a different photosite of the 2x2 cell. The vendor accepts one without
+    // complaint, so a reader has to be told, or it demosaics a windowed capture exactly one photosite out of phase --
+    // the same class of error that made a red source render green when the row order was reversed.
+    Frame frame = makeFrame(ImageFormat::RAW8, 8, 4);
+    frame.start_x = 5;
+    frame.start_y = 12;
+    const std::string path = "ut_frame_writer_offset.fits";
+    assert(imgio::writeFits(frame, path, cards));
+
+    const std::vector<std::uint8_t> d = readFile(path);
+    assert(fitsValue(d, "XBAYROFF") == "1");         // 5 is odd
+    assert(fitsValue(d, "YBAYROFF") == "0");         // 12 is even
+    std::remove(path.c_str());
+
+    // And a frame with no mosaic gets no offsets, because they would describe nothing.
+    Frame binned = makeFrame(ImageFormat::RAW8, 8, 4);
+    binned.bin = 2;
+    binned.start_x = 5;
+    const std::string binned_path = "ut_frame_writer_offset_binned.fits";
+    assert(imgio::writeFits(binned, binned_path, cards));
+    assert(fitsValue(readFile(binned_path), "XBAYROFF").empty());
+    std::remove(binned_path.c_str());
 }
 
 void testFitsCards()
@@ -485,6 +577,9 @@ int main()
     testFitsRowOrderAndValues();
     testFits16BitBiasRoundTrips();
     testFitsColourPlanes();
+    testFitsBayerPatternNames();
+    testFitsDropsMosaicCardWhenThereIsNoMosaic();
+    testFitsMosaicOffsetFollowsRoiOrigin();
     testFitsCards();
     testPreview();
 

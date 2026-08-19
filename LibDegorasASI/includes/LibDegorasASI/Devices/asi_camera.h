@@ -51,10 +51,17 @@ namespace dpasi
  *       Windows registry across process lifetimes, so a previous run or an unrelated application can leave it enabled
  *       and silently alter every frame this library delivers. Clearing it at connect makes a fresh connection mean the
  *       same thing every time. Set it to false only if an external tool is deliberately managing that setting.
+ * @note @ref reset_flip defaults to true for the same reason, and matters more than it looks. The vendor's FLIP
+ *       control also persists, and ASIStudio sets it from a menu, so a camera can arrive delivering vertically
+ *       mirrored buffers because of something a different program did days ago. That does not merely turn pictures
+ *       upside down: on a colour sensor a vertical flip moves the Bayer mosaic by one row, so every raw frame is
+ *       demosaiced wrong and reds come out green -- and nothing in the frame reveals it. Set it to false only if the
+ *       flip is being managed deliberately, and then expect to correct the mosaic yourself.
  */
 struct DeviceConfig
 {
     bool disable_dark_subtract = true;   ///< Clear the vendor's persistent dark-subtraction setting at connect.
+    bool reset_flip = true;              ///< Clear the vendor's persistent image flip at connect.
     int telemetry_rate_ms = 500;         ///< Interval of the background telemetry poller, when started.
 };
 

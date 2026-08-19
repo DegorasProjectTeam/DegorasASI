@@ -207,11 +207,12 @@ std::cout << imgio::framePreview(frame, 72); // an ASCII brightness map, returne
 imgio::FitsCards cards;                      // and FITS -- for KEEPING
 cards.push_back(imgio::fitsReal("EXPTIME", 0.2, "exposure time in seconds"));
 cards.push_back(imgio::fitsInt("GAIN", 450));
-cards.push_back(imgio::fitsText("BAYERPAT", "RGGB"));   // so a reader can demosaic a raw colour frame
+cards.push_back(imgio::fitsBayerPattern(desc.bayer_pattern));   // so a reader can demosaic a raw colour frame
 imgio::writeFits(frame, "shot.fits", cards);
 ```
 
-FITS is the archival half: 2880-byte blocks, big-endian, bottom-up rows, and RGB24 de-interleaved into R/G/B planes.
+FITS is the archival half: 2880-byte blocks, big-endian, top-down rows declared with `ROWORDER`, and RGB24
+de-interleaved into R/G/B planes.
 Everything a pipeline needs later travels inside the file rather than in a filename convention. Verified against
 **astropy** in strict mode, with the pixels cross-checked plane by plane against the BMP of the same frame.
 
@@ -224,6 +225,28 @@ Everything a pipeline needs later travels inside the file rather than in a filen
 > fill the range — photometry needs the real numbers — and `DATAMIN`/`DATAMAX` tell a viewer the true range so it can
 > scale the display.
 >
+> [!IMPORTANT]
+> Rows are stored **top-down**, exactly as the sensor delivers them, and a `ROWORDER = 'TOP-DOWN'` card says so.
+> FITS is often described as putting the first pixel at the lower left, but the standard does not require it — that
+> is a recommendation from WCS Paper I, and practice went the other way. Siril, PixInsight, DeepSkyStacker, ASTAP and
+> KStars all assume top-down when `ROWORDER` is absent, and ASIStudio does not read the card at all.
+>
+> This is not cosmetic on a colour camera. Reversing the rows shifts the Bayer mosaic by one row whenever the height
+> is even — which is always, since `isRoiAligned()` requires it — so a native RGGB sensor becomes GBRG in the file.
+> Declare `RGGB` over that and the reader fills its red channel from green photosites: measured on an ASI224MC, a red
+> source came out **green**. Storing rows as the sensor sends them makes the declared pattern true by construction.
+> Siril renders every image bottom-up, so it displays these frames inverted — as it does for INDI, N.I.N.A. and
+> SharpCap files, for the same reason. The colour, which is what the mosaic phase governs, is right.
+>
+> `XBAYROFF`/`YBAYROFF` are always derived from the frame's own ROI origin, never taken from the caller: the vendor
+> accepts an **odd** origin without complaint, and an odd one starts the window on a different photosite, shifting
+> the mosaic exactly as reversing the rows would.
+>
+> Build the mosaic card with `imgio::fitsBayerPattern()`. The SDK names a pattern by its first *row* (`RG`), FITS by
+> the whole 2×2 *cell* (`RGGB`), and only `RG` is completed by `GB` — appending it to the others yields `BGGB`,
+> `GRGB` and `GBGB`, which are not Bayer patterns. `writeFits` drops a `BAYERPAT` on a binned or RGB24 frame, since
+> neither carries a mosaic any more.
+
 > For archiving a colour camera, prefer **`--format RAW16 --fits`**: it keeps the sensor data untouched and records
 > `BAYERPAT`, so Siril, PixInsight or your own pipeline demosaics it with the algorithm *you* choose. RGB24 has already
 > been demosaiced by the SDK.
