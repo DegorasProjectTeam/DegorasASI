@@ -74,7 +74,7 @@ against the vendor's.
 
 | Layer | Folders | Knows about | Examples |
 |-------|---------|-------------|----------|
-| 1 — generic infrastructure | `Global/`, `Common/`, `Helpers/` | nothing vendor-specific | export macro; `OperationResult`, `DeviceError`, camera vocabulary, `Frame`, image geometry; `StatusPoller<StatusT>`, `FramePump`, `waitForCondition`, JSON helpers |
+| 1 — generic infrastructure | `Global/`, `Common/`, `Helpers/` | nothing vendor-specific | export macro; `OperationResult`, `DeviceError`, camera vocabulary, `Frame`, image geometry; `StatusPoller<StatusT>`, `FramePump`, `waitForCondition`, frame writers, JSON helpers |
 | 2 — ZWO ASI vendor layer | `ASI/` | the ASICamera2 C API | `categoryFromAsi`; the discovery/per-camera/acquisition lock scopes; `enumerateCameras`; the camera-ownership registry; `AsiCameraController` |
 | 3 — camera driver | `Devices/` | nothing model-specific | `AsiCamera`, one class for every ASI model |
 
@@ -194,6 +194,49 @@ if (camera.supportsFormat(types::ImageFormat::RAW16))
     camera.doSetFullFrameRoi(types::ImageFormat::RAW16, 1);
 ```
 
+### Seeing the image
+
+The library draws nothing and owns no image pipeline — it stays free of GUI toolkits, Qt and OpenCV. What it does
+own is **what the vendor never documented about its own pixel data**, because a consumer forced to rediscover that
+gets silently wrong images until it does. `Helpers/frame_writer.h` is therefore part of the library:
+
+```cpp
+imgio::writeFrame(frame, "shot.bmp");        // BMP for RGB24, PGM for RAW8 / RAW16 / Y8
+std::cout << imgio::framePreview(frame, 72); // an ASCII brightness map, returned as a string
+```
+
+Nothing there needs more than `<fstream>`. `asi_camera_view` is the example to run first on new hardware: it prints
+the brightness map, so *"is the camera seeing anything?"* is answered before any file is opened, then saves a
+full-sensor frame in every format the camera supports. `asi_camera_shoot` is the smallest useful capture tool —
+`--exposure`, `--gain`, `--format`, `--bin` — validated against the limits *this* camera reports rather than any baked
+in, and the seed of a capture button in a real application.
+
+Two properties of the pixel data make that nearly free, neither documented by the vendor and both measured here:
+
+| Format | Finding | Consequence |
+|--------|---------|-------------|
+| `RGB24` | Channel order is **B, G, R** (confirmed by driving `WB_RED` / `WB_BLUE` to opposite extremes and watching which byte followed) | Identical to what BMP stores, so writing a BMP is a row-by-row copy with no channel swap |
+| `RAW16` | Already spans the **full 16-bit range** on a 12-bit sensor — minimum step 1, values to 65534 — so the SDK scales rather than shifts | Consume it directly; no `>> 4` and no left-shift |
+
+For a live view, hand the frame straight to your toolkit. With Qt nothing needs converting, because `Format_BGR888`
+is exactly the ASI RGB24 layout:
+
+```cpp
+QImage(frame.data.data(), frame.width, frame.height, QImage::Format_BGR888);       // RGB24
+QImage(frame.data.data(), frame.width, frame.height, QImage::Format_Grayscale8);   // RAW8 / Y8
+QImage(frame.data.data(), frame.width, frame.height, QImage::Format_Grayscale16);  // RAW16
+```
+
+> [!WARNING]
+> `RAW8` and `RAW16` from a colour camera are **Bayer-mosaiced**, not grey pictures: displayed as-is they look like a
+> fine checkerboard. Ask for `RGB24` when a viewable colour image is what you want — the SDK demosaics that one for
+> you. The raw formats are for processing.
+>
+> A Qt application must also be built with the **same toolchain** as the library: the public API passes C++
+> standard-library types across the boundary, so a MinGW/UCRT64 build of this library cannot be linked into a Qt kit
+> built with a different GCC or C runtime. Build the library with your Qt kit's toolchain — it carries no platform
+> lock, so only the preset changes.
+
 ### USB link and traffic
 
 The USB link is the usual cause of dropped frames, so it is first-class. A USB3 camera in a USB2 port works but
@@ -303,6 +346,8 @@ hardware-free unit tests and `Test_*` for integration tests (build with `LIBDEGO
 * `UT_CameraRegistry` — camera-ownership exclusivity under a 16-thread race, and the three lock scopes' identity.
 * `UT_DeviceGuards` — every device operation refuses with `NOT_CONNECTED` before connecting; a failed connect leaves no
   ownership claim behind; destruction is safe without ever connecting.
+* `UT_FrameWriter` — the BMP and PGM writers checked byte for byte against synthetic frames, including the row-padding
+  path no ASI camera can reach, the 16-bit byte swap, and refusal of mismatched or truncated frames.
 * `UT_FramePump` — the frame worker driven by SYNTHETIC producers no camera could reproduce on demand: the backoff that
   stops a failing producer spinning, prompt cancellation during that backoff, containment of a throwing producer or
   callback, observers callable from inside the callback, and per-run counters.

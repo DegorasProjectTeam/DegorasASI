@@ -9,5 +9,7 @@ add_subdirectory(basic_camera_discovery)
 add_subdirectory(basic_camera_connection)
 add_subdirectory(asi_camera_capture)
 add_subdirectory(asi_camera_frame_callback)
+add_subdirectory(asi_camera_view)
+add_subdirectory(asi_camera_shoot)
 
 # **********************************************************************************************************************

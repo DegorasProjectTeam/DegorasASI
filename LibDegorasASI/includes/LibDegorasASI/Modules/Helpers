@@ -30,5 +30,6 @@
 
 #include <LibDegorasASI/Helpers/frame_pump.h>
 #include <LibDegorasASI/Helpers/status_poller.h>
+#include <LibDegorasASI/Helpers/frame_writer.h>
 #include <LibDegorasASI/Helpers/wait_for.h>
 #include <LibDegorasASI/Helpers/json_utils.h>

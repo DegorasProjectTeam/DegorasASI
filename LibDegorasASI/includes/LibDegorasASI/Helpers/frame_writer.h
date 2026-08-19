@@ -1,0 +1,105 @@
+/*
+ *  LibDegorasASI - An extensible C++ library for controlling ZWO ASI astronomy cameras.
+ *
+ *  Developed as free software by and for the Spanish Navy Observatory SLR station (SFEL) in San Fernando.
+ *
+ *  Copyright (C) 2024-2026 Degoras Project Team
+ *                          < Ángel Vera Herrera, avera@roa.es - angelvh.engr@gmail.com >
+ *                          < Jesús Relinque Madroñal, jrelinque@roa.es >
+ *
+ *  This program is free software: you can redistribute it and/or modify it under the terms of the GNU General
+ *  Public License as published by the Free Software Foundation, either version 3 of the License, or (at your
+ *  option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the
+ *  implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+ *  for more details.
+ *
+ *  You should have received a copy of the GNU General Public License along with this program. If not, see
+ *  <https://www.gnu.org/licenses/>.
+ *
+ *  SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+#pragma once
+
+// C++ INCLUDES
+#include <string>
+
+// PROJECT INCLUDES
+#include "LibDegorasASI/Global/libdegorasasi_export.h"
+#include "LibDegorasASI/Common/common_types.h"
+
+
+// NAMESPACES
+namespace dpasi
+{
+namespace imgio
+{
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Writing a captured frame to a file, and glancing at one without a viewer.
+//
+// This lives in the library rather than in an example for one reason: it encodes what the VENDOR DOES NOT DOCUMENT
+// about its own pixel data. Both facts below were measured on hardware, and a consumer that had to rediscover them
+// would get silently wrong images until it did:
+//
+//   * RGB24 arrives as B,G,R -- not R,G,B. Get it wrong and reds and blues swap, which is easy to miss on a dim scene.
+//   * RAW16 already spans the full 16-bit range on a 12-bit sensor (the SDK scales rather than shifts), so it needs no
+//     shifting. Shifting it "to correct for 12 bits" would darken the image by a factor of 16.
+//
+// Nothing here depends on a GUI toolkit, an imaging library or the vendor SDK: only <fstream> and the Frame type. The
+// library still draws nothing and owns no image pipeline -- it just refuses to make every consumer relearn the format.
+// ---------------------------------------------------------------------------------------------------------------------
+
+/**
+ * @brief Write an RGB24 frame as a 24-bit BMP.
+ * @param frame The frame to write; must be ImageFormat::RGB24.
+ * @param path Destination path.
+ * @return False if the frame is not RGB24, is empty or inconsistent, or the file could not be written.
+ * @note Chosen for colour because BMP stores pixels B,G,R exactly as the SDK delivers them, so a row is a straight
+ *       copy, and because a desktop opens one on a double click. Rows are written BOTTOM-UP and padded to a multiple
+ *       of four bytes, as the format requires.
+ */
+LIBDEGORASASI_EXPORT bool writeBmp(const types::Frame& frame, const std::string& path);
+
+/**
+ * @brief Write a single-channel frame (RAW8, Y8 or RAW16) as a binary PGM.
+ * @param frame The frame to write; must be ImageFormat::RAW8, Y8 or RAW16.
+ * @param path Destination path.
+ * @return False if the frame is not single-channel, is empty, or the file could not be written.
+ * @note PGM carries 16 bits, which BMP cannot, and every astronomy tool and image editor reads it. Its 16-bit samples
+ *       are BIG-endian while the SDK delivers little-endian, so RAW16 is byte-swapped on the way out; the values
+ *       themselves are written unchanged, because they already span the full 16-bit range.
+ * @warning RAW8 and RAW16 from a COLOUR camera are Bayer-mosaiced, not grey pictures: written as-is they look like a
+ *          fine checkerboard until demosaiced. Capture ImageFormat::RGB24 when a viewable colour image is wanted --
+ *          the SDK demosaics that one for you. The raw formats are for processing, not for looking at.
+ */
+LIBDEGORASASI_EXPORT bool writePgm(const types::Frame& frame, const std::string& path);
+
+/**
+ * @brief Write a frame with whichever writer fits its format: BMP for RGB24, PGM otherwise.
+ * @return False if the format is not one this module writes, or the file could not be written.
+ */
+LIBDEGORASASI_EXPORT bool writeFrame(const types::Frame& frame, const std::string& path);
+
+/// @brief The conventional file extension for the format, without a dot: "bmp" for RGB24, "pgm" otherwise.
+LIBDEGORASASI_EXPORT std::string extensionFor(types::ImageFormat format);
+
+/**
+ * @brief Render a frame as a coarse ASCII brightness map.
+ * @param frame The frame to render.
+ * @param columns Width of the map in characters. The aspect ratio is preserved and halved, because a character cell
+ *        is about twice as tall as it is wide and the picture would otherwise come out stretched.
+ * @return The map as newline-separated rows, or an empty string if the frame is empty or @p columns is not positive.
+ * @note Answers "is the camera seeing anything at all?" with no file, no viewer and no toolkit, which is the first
+ *       question when a camera is plugged in for the first time. Returned rather than printed so it can go to a log,
+ *       a status pane or a test assertion just as easily as to a terminal.
+ */
+LIBDEGORASASI_EXPORT std::string framePreview(const types::Frame& frame, int columns = 64);
+
+// ---------------------------------------------------------------------------------------------------------------------
+
+}} // END NAMESPACES
+
+// ---------------------------------------------------------------------------------------------------------------------
