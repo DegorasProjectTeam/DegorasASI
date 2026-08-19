@@ -265,6 +265,12 @@ std::string fitsValue(const std::vector<std::uint8_t>& d, const std::string& key
     return std::string();
 }
 
+/// Undo what a FITS reader does to a sample: big-endian signed, plus BZERO.
+int fitsSample(const std::vector<std::uint8_t>& d, std::size_t at)
+{
+    return static_cast<std::int16_t>((d[at] << 8) | d[at + 1]) + 32768;
+}
+
 std::size_t fitsHeaderBytes(const std::vector<std::uint8_t>& d)
 {
     for (std::size_t at = 0; at + 80 <= d.size(); at += 80)
@@ -290,11 +296,15 @@ void testFitsStructure()
 
     // Every card is exactly 80 columns, and the mandatory ones come first and in order.
     assert(fitsValue(d, "SIMPLE") == "T");
-    assert(fitsValue(d, "BITPIX") == "8");
+    // 16-bit ALWAYS, even for an 8-bit frame: BITPIX 8 is legal but widely unimplemented, and ZWO's own ASIStudio
+    // refuses it outright. An 8-bit value fits a 16-bit sample exactly, so promoting it loses nothing.
+    assert(fitsValue(d, "BITPIX") == "16");
     assert(fitsValue(d, "NAXIS") == "2");
     assert(fitsValue(d, "NAXIS1") == "16");
     assert(fitsValue(d, "NAXIS2") == "8");
-    assert(fitsValue(d, "BZERO").empty());        // 8-bit FITS is already unsigned; no bias needed
+    assert(fitsValue(d, "BZERO") == "32768");
+    assert(!fitsValue(d, "DATAMIN").empty());
+    assert(!fitsValue(d, "DATAMAX").empty());
     assert(!fitsValue(d, "DATE-OBS").empty());
 
     // Header padding is SPACES, data padding is zeros: the standard is specific about each.
@@ -318,7 +328,7 @@ void testFitsRowOrderAndValues()
     // frame. Getting this backwards flips every image vertically, which is easy to miss on a symmetric scene.
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x)
-            assert(d[at + static_cast<std::size_t>(y) * w + x] ==
+            assert(fitsSample(d, at + (static_cast<std::size_t>(y) * w + x) * 2u) ==
                    frame.data[static_cast<std::size_t>(h - 1 - y) * w + x]);
     std::remove(path.c_str());
 }
@@ -359,12 +369,9 @@ void testFits16BitBiasRoundTrips()
     {
         for (int x = 0; x < w; ++x)
         {
-            const std::size_t out_at = at + (static_cast<std::size_t>(y) * w + x) * 2u;
-            const int stored = static_cast<std::int16_t>((d[out_at] << 8) | d[out_at + 1]);
-            const int recovered = stored + 32768;
+            const int recovered = fitsSample(d, at + (static_cast<std::size_t>(y) * w + x) * 2u);
             const std::size_t src = (static_cast<std::size_t>(h - 1 - y) * w + x) * 2u;   // bottom-up
-            const int original = frame.data[src] | (frame.data[src + 1] << 8);
-            assert(recovered == original);
+            assert(recovered == (frame.data[src] | (frame.data[src + 1] << 8)));
         }
     }
     std::remove(path.c_str());
@@ -394,7 +401,7 @@ void testFitsColourPlanes()
         {
             for (int x = 0; x < w; ++x)
             {
-                const std::uint8_t got = d[at + p * plane + static_cast<std::size_t>(y) * w + x];
+                const int got = fitsSample(d, at + (p * plane + static_cast<std::size_t>(y) * w + x) * 2u);
                 const std::size_t src = (static_cast<std::size_t>(h - 1 - y) * w + x) * 3u + channel;
                 assert(got == frame.data[src]);
             }

@@ -116,10 +116,15 @@ LIBDEGORASASI_EXPORT FitsCard fitsText(const std::string& key, const std::string
  *
  * @note Layout follows the standard: 2880-byte blocks, big-endian samples, and the first axis varying fastest. Rows go
  *       out BOTTOM-UP, which is the near-universal convention astronomy software expects, and the same order BMP uses.
- * @note 8-bit frames are written as BITPIX 8. RAW16 is written as BITPIX 16 with BZERO 32768, because that BITPIX is
- *       SIGNED in FITS while the sensor data is unsigned; readers apply BZERO automatically, so the values come back
- *       unchanged. RGB24 becomes a three-plane cube (NAXIS3 = 3) de-interleaved into R, G, B plane order -- FITS
- *       stores colour plane by plane, and the SDK delivers it interleaved as B,G,R.
+ * @note Samples are ALWAYS written as BITPIX 16, including for an 8-bit frame, with BZERO 32768 because that BITPIX is
+ *       SIGNED in FITS while sensor data is unsigned; readers apply BZERO automatically, so the values come back
+ *       unchanged. BITPIX 8 is perfectly legal and would be the obvious choice for an 8-bit frame, but 8-bit FITS is
+ *       rare in astronomy and widely unimplemented -- ZWO's own ASIStudio refuses to open one at all. An 8-bit value
+ *       fits a 16-bit sample exactly, so nothing is lost by promoting it. Values keep the sensor's own ADU rather than
+ *       being stretched to fill the range, because photometry needs the real numbers; DATAMIN and DATAMAX record the
+ *       range actually present so a viewer can scale its display.
+ * @note RGB24 becomes a three-plane cube (NAXIS3 = 3) de-interleaved into R, G, B plane order -- FITS stores colour
+ *       plane by plane, and the SDK delivers it interleaved as B,G,R.
  * @warning A RAW8 or RAW16 frame from a colour camera is Bayer-mosaiced. Pass the pattern in @p extra as a BAYERPAT
  *          card so a reader can demosaic it; without one it will be shown as grey.
  */

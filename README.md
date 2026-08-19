@@ -211,10 +211,22 @@ cards.push_back(imgio::fitsText("BAYERPAT", "RGGB"));   // so a reader can demos
 imgio::writeFits(frame, "shot.fits", cards);
 ```
 
-FITS is the archival half: 2880-byte blocks, big-endian, bottom-up rows, RGB24 de-interleaved into R/G/B planes, and
-RAW16 written as `BITPIX 16` with `BZERO 32768` because that BITPIX is *signed* in FITS while sensor data is not.
+FITS is the archival half: 2880-byte blocks, big-endian, bottom-up rows, and RGB24 de-interleaved into R/G/B planes.
 Everything a pipeline needs later travels inside the file rather than in a filename convention. Verified against
 **astropy** in strict mode, with the pixels cross-checked plane by plane against the BMP of the same frame.
+
+> [!NOTE]
+> Samples are always written as **`BITPIX 16`**, including for an 8-bit frame, with `BZERO 32768` because that BITPIX
+> is *signed* in FITS while sensor data is not. `BITPIX 8` is perfectly legal — astropy accepts it in strict mode —
+> but 8-bit FITS is rare in astronomy and widely unimplemented: ZWO's own **ASIStudio rejects it outright** with
+> *"8 bits not supported"*. A standards-correct file the observatory's tools cannot open is no use, and an 8-bit value
+> fits a 16-bit sample exactly, so nothing is lost. Values keep the sensor's own ADU rather than being stretched to
+> fill the range — photometry needs the real numbers — and `DATAMIN`/`DATAMAX` tell a viewer the true range so it can
+> scale the display.
+>
+> For archiving a colour camera, prefer **`--format RAW16 --fits`**: it keeps the sensor data untouched and records
+> `BAYERPAT`, so Siril, PixInsight or your own pipeline demosaics it with the algorithm *you* choose. RGB24 has already
+> been demosaiced by the SDK.
 
 Nothing there needs more than `<fstream>`. `asi_camera_view` is the example to run first on new hardware: it prints
 the brightness map, so *"is the camera seeing anything?"* is answered before any file is opened, then saves a

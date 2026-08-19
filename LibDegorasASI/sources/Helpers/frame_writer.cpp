@@ -257,22 +257,42 @@ bool writeFits(const types::Frame& frame, const std::string& path, const FitsCar
 
     // -- Header --------------------------------------------------------------------------------------------------
     // The mandatory cards come first and in this order; anything else may follow, and END closes the header.
+    // Samples are written as 16-bit ALWAYS, including for an 8-bit frame. BITPIX 8 is perfectly legal, and astropy
+    // accepts it in strict mode, but 8-bit FITS is rare in astronomy and widely unimplemented -- ZWO's own ASIStudio
+    // rejects it outright with "8 bits not supported". A file that is standards-correct but that the observatory's
+    // tools cannot open is of no use, and an 8-bit value fits a 16-bit sample exactly, so nothing is lost.
+    //
+    // Values are NOT rescaled to fill the 16-bit range: they stay the sensor's own ADU, which is what photometry
+    // needs. DATAMIN/DATAMAX below tell a viewer the real range so it can stretch the display sensibly.
+    std::uint16_t data_min = 0xFFFF;
+    std::uint16_t data_max = 0;
+    {
+        const std::size_t samples = frame.expectedBytes() / (sixteen_bit ? 2u : 1u);
+        for (std::size_t i = 0; i < samples; ++i)
+        {
+            const std::uint16_t v = sixteen_bit
+                ? static_cast<std::uint16_t>(frame.data[i * 2] | (frame.data[i * 2 + 1] << 8))
+                : static_cast<std::uint16_t>(frame.data[i]);
+            if (v < data_min) data_min = v;
+            if (v > data_max) data_max = v;
+        }
+    }
+
     FitsCards cards;
     cards.push_back(FitsCard{"SIMPLE", "T", "conforms to FITS standard"});
-    cards.push_back(fitsInt("BITPIX", sixteen_bit ? 16 : 8, "bits per sample"));
+    cards.push_back(fitsInt("BITPIX", 16, "bits per sample"));
     cards.push_back(fitsInt("NAXIS", colour ? 3 : 2, "number of axes"));
     cards.push_back(fitsInt("NAXIS1", frame.width, "image width"));
     cards.push_back(fitsInt("NAXIS2", frame.height, "image height"));
     if (colour)
         cards.push_back(fitsInt("NAXIS3", 3, "colour planes, in R G B order"));
 
-    if (sixteen_bit)
-    {
-        // BITPIX 16 is SIGNED in FITS while the sensor data is unsigned, so the samples are stored biased and the
-        // reader undoes it. Every FITS reader applies BZERO, so the values come back exactly as captured.
-        cards.push_back(fitsInt("BZERO", 32768, "unsigned samples stored as signed"));
-        cards.push_back(fitsInt("BSCALE", 1, ""));
-    }
+    // BITPIX 16 is SIGNED in FITS while the sensor data is unsigned, so the samples are stored biased and the reader
+    // undoes it. Every FITS reader applies BZERO, so the values come back exactly as captured.
+    cards.push_back(fitsInt("BZERO", 32768, "unsigned samples stored as signed"));
+    cards.push_back(fitsInt("BSCALE", 1, ""));
+    cards.push_back(fitsInt("DATAMIN", data_min, "smallest sample present"));
+    cards.push_back(fitsInt("DATAMAX", data_max, "largest sample present"));
 
     cards.push_back(fitsText("DATE-OBS", fitsDateObs(frame.timestamp), "UTC at frame retrieval"));
     if (frame.bin > 1)
@@ -298,10 +318,17 @@ bool writeFits(const types::Frame& frame, const std::string& path, const FitsCar
     // Big-endian, first axis varying fastest, rows BOTTOM-UP. Colour is stored plane by plane, not interleaved, so
     // the SDK's interleaved B,G,R has to be taken apart and emitted as R, then G, then B.
     std::string data;
-    const std::size_t sample_bytes = sixteen_bit ? 2u : 1u;
-    data.reserve(static_cast<std::size_t>(frame.width) * frame.height * (colour ? 3u : 1u) * sample_bytes);
+    data.reserve(static_cast<std::size_t>(frame.width) * frame.height * (colour ? 3u : 1u) * 2u);
 
     const std::size_t row_bytes = static_cast<std::size_t>(frame.width) * types::bytesPerPixel(frame.format);
+
+    // Every sample goes out as a biased, big-endian 16-bit word, whatever width it arrived in.
+    const auto emit = [&data](std::uint16_t value)
+    {
+        const int biased = static_cast<int>(value) - 32768;
+        data += static_cast<char>((biased >> 8) & 0xFF);
+        data += static_cast<char>(biased & 0xFF);
+    };
 
     if (colour)
     {
@@ -312,7 +339,7 @@ bool writeFits(const types::Frame& frame, const std::string& path, const FitsCar
             {
                 const std::size_t row_at = static_cast<std::size_t>(y) * row_bytes;
                 for (int x = 0; x < frame.width; ++x)
-                    data += static_cast<char>(frame.data[row_at + static_cast<std::size_t>(x) * 3u + channel]);
+                    emit(frame.data[row_at + static_cast<std::size_t>(x) * 3u + channel]);
             }
         }
     }
@@ -321,18 +348,16 @@ bool writeFits(const types::Frame& frame, const std::string& path, const FitsCar
         for (int y = frame.height - 1; y >= 0; --y)
         {
             const std::size_t row_at = static_cast<std::size_t>(y) * row_bytes;
-            if (!sixteen_bit)
+            for (int x = 0; x < frame.width; ++x)
             {
-                data.append(reinterpret_cast<const char*>(frame.data.data() + row_at), row_bytes);
-            }
-            else
-            {
-                for (int x = 0; x < frame.width; ++x)
+                if (sixteen_bit)
                 {
                     const std::size_t at = row_at + static_cast<std::size_t>(x) * 2u;
-                    const int biased = static_cast<int>(frame.data[at] | (frame.data[at + 1] << 8)) - 32768;
-                    data += static_cast<char>((biased >> 8) & 0xFF);   // big-endian, high byte first
-                    data += static_cast<char>(biased & 0xFF);
+                    emit(static_cast<std::uint16_t>(frame.data[at] | (frame.data[at + 1] << 8)));
+                }
+                else
+                {
+                    emit(frame.data[row_at + static_cast<std::size_t>(x)]);
                 }
             }
         }
