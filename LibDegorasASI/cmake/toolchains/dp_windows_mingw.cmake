@@ -1,7 +1,8 @@
 #
 # Windows toolchain for MSYS2 MinGW prefixes.
 # Requires environment variable:
-#   MINGW_ROOT  -> the MSYS2 prefix, e.g. E:/msys64/ucrt64 (or /mingw64, /clang64).
+#   MINGW_ROOT  -> the MSYS2 prefix. The DegorasSLR environment exports it (${MSYS2_ROOT}/${MSYS2_ENV});
+#                  elsewhere set it yourself to a ucrt64, mingw64 or clang64 prefix.
 #
 # This is the project's REFERENCE (validated) Windows toolchain, not a requirement: LibDegorasASI itself imposes no
 # platform or toolchain lock, because the ZWO ASI Camera SDK is shipped for Windows, Linux, macOS and Android.
@@ -11,7 +12,8 @@ set(CMAKE_SYSTEM_NAME Windows)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)
 
 if(NOT DEFINED ENV{MINGW_ROOT} OR "$ENV{MINGW_ROOT}" STREQUAL "")
-    message(FATAL_ERROR "[CMAKE] dp_windows_mingw.cmake: MINGW_ROOT is not set. Expected e.g. E:/msys64/ucrt64.")
+    message(FATAL_ERROR "[CMAKE] dp_windows_mingw.cmake: MINGW_ROOT is not set. It names the MSYS2 prefix "
+                        "holding gcc; the DegorasSLR environment exports it. Enter that environment, or set it.")
 endif()
 
 set(_PFX "$ENV{MINGW_ROOT}")

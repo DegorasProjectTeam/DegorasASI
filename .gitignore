@@ -1,6 +1,11 @@
-# Build output
+# Build output. Builds do NOT live in the tree: the presets put them in $DEVSYSTEM_BUILDTREES and installs in
+# $DEVSYSTEM_DEPLOYS. These stay as a guard against a manual out-of-preset configure landing here.
 build/
 /build*/
+
+# Personal CMake presets. Machine-specific by definition, so never tracked -- a committed one with an absolute
+# toolchain path breaks for everyone the moment that path changes. Start from CMakeUserPresets.json.example.
+CMakeUserPresets.json
 
 # CMake
 CMakeCache.txt

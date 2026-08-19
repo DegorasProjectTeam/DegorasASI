@@ -17,15 +17,20 @@ standalone install and a **vcpkg** overlay port. This document covers both.
 
 ## 1. Standalone install (no vcpkg)
 
-Configure, build and install with the provided presets (the MinGW presets require the `MINGW_ROOT` environment
-variable, e.g. `E:/msys64/ucrt64`):
+Configure, build and install with the provided presets. They read three variables the DegorasSLR environment
+exports — `MINGW_ROOT`, `DEVSYSTEM_BUILDTREES` and `DEVSYSTEM_DEPLOYS` — and are reported as disabled if any is
+missing, so a build never lands somewhere unintended:
 
 ```sh
 cd LibDegorasASI
-cmake --preset local-mingw-dynamic-rel
-cmake --build --preset local-mingw-dynamic-rel
-cmake --install ../build/local-mingw-dynamic-rel --prefix /path/to/prefix
+cmake --preset mingw-dynamic-rel
+cmake --build --preset mingw-dynamic-rel
+cmake --install "$DEVSYSTEM_BUILDTREES/LibDegorasASI/mingw-dynamic-rel"
 ```
+
+The preset already sets the install prefix to `$DEVSYSTEM_DEPLOYS/LibDegorasASI/<preset>/`, so no `--prefix` is
+needed; pass one to install elsewhere. The prefix is per preset on purpose — the library defines no debug
+postfix, so a Debug and a Release install sharing a prefix would overwrite each other.
 
 Installed layout (relative to the prefix):
 

@@ -112,8 +112,9 @@ or a whole group via a module aggregator: `#include <LibDegorasASI/Modules/Devic
 
 * An MSYS2 MinGW prefix providing GCC, Ninja and (optionally) windres. UCRT64 is the reference prefix.
 * CMake >= 3.21.
-* The `MINGW_ROOT` environment variable pointing at the prefix (e.g. `E:/msys64/ucrt64`). The provided
-  `CMakeUserPresets.json` sets this for the local machine — adjust it for yours.
+* The DegorasSLR environment variables `MINGW_ROOT`, `DEVSYSTEM_BUILDTREES` and `DEVSYSTEM_DEPLOYS`. The
+  devdrive launcher exports all three; outside it, export them yourself or copy
+  `CMakeUserPresets.json.example` and override them there.
 * A ZWO ASI camera and its driver installed, to run anything that touches hardware.
 
 ### Build
@@ -122,15 +123,23 @@ The CMake project root is the inner `LibDegorasASI/` directory. Configure and bu
 
 ```sh
 cd LibDegorasASI
-cmake --preset local-mingw-dynamic-deb
-cmake --build --preset local-mingw-dynamic-deb
+cmake --preset mingw-dynamic-deb
+cmake --build --preset mingw-dynamic-deb
 ```
 
 Project presets in `CMakePresets.json` cover `mingw-{dynamic,static}-{deb,rel}` plus `unix-dynamic-{deb,rel}` for a
-non-Windows host; the `local-*` user presets just add your `MINGW_ROOT`. Build options:
-`LIBDEGORASASI_BUILD_SHARED` (default ON), `LIBDEGORASASI_BUILD_TESTING`, `LIBDEGORASASI_BUILD_EXAMPLES`.
+non-Windows host. Build options: `LIBDEGORASASI_BUILD_SHARED` (default ON), `LIBDEGORASASI_BUILD_TESTING`,
+`LIBDEGORASASI_BUILD_EXAMPLES`.
 
-Artifacts land in `build/<preset>/bin/` at the repository root. The build stages, next to the binaries, both the
+Nothing is built inside the repository. Each preset builds in `$DEVSYSTEM_BUILDTREES/LibDegorasASI/<preset>/`
+and installs to `$DEVSYSTEM_DEPLOYS/LibDegorasASI/<preset>/`, so `cmake --install` needs no `--prefix`. The
+deploy prefix is per preset because the library defines no debug postfix: a Debug and a Release install sharing
+one prefix would overwrite each other's `LibDegorasASI.dll` and export files.
+
+The presets are gated on those three variables. Without them CMake reports the preset as disabled rather than
+writing the build somewhere unexpected — which is why `cmake --list-presets` is empty outside the environment.
+
+Binaries land in `$DEVSYSTEM_BUILDTREES/LibDegorasASI/<preset>/bin/`. The build stages, next to them, both the
 vendored ZWO runtime and the MinGW C++ runtime (`libstdc++-6.dll`, `libgcc_s_seh-1.dll`, `libwinpthread-1.dll`), so
 the executables run without the toolchain on `PATH`.
 
@@ -384,7 +393,7 @@ measured against a real ASI224MC, and each is why a particular piece of the desi
 There is no test-framework dependency: the `testing/` executables are plain `assert()`-based checks, named `UT_*` for
 hardware-free unit tests and `Test_*` for integration tests (build with `LIBDEGORASASI_BUILD_TESTING=ON`). The
 `examples/` demos (`Example_*`) build with `LIBDEGORASASI_BUILD_EXAMPLES=ON`; each is a self-contained subproject
-(`<name>/CMakeLists.txt` + `main.cpp`). Everything runs from `build/<preset>/bin/`.
+(`<name>/CMakeLists.txt` + `main.cpp`). Everything runs from `$DEVSYSTEM_BUILDTREES/LibDegorasASI/<preset>/bin/`.
 
 * `UT_ImageGeometry` — the safety-critical buffer arithmetic, ROI alignment rules, and the validated numeric adapters.
 * `UT_Json` — JSON round-trip for every serialisable value type, compact and pretty.
