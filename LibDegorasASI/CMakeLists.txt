@@ -155,8 +155,31 @@ target_link_libraries(LibDegorasASI PRIVATE ZWO::ASICamera PUBLIC Threads::Threa
 # ----------------------------------------------------------------------------------------------------------------------
 # SUBDIRECTORIES
 
+# Collected by walking the directory tree rather than by listing names here: each example is a self-contained
+# subproject, and a hand-maintained list would drift the first time one is added.
+function(la_collect_executables dir out_var)
+    get_property(subs DIRECTORY "${dir}" PROPERTY SUBDIRECTORIES)
+    get_property(tgts DIRECTORY "${dir}" PROPERTY BUILDSYSTEM_TARGETS)
+
+    set(acc "")
+    foreach(t IN LISTS tgts)
+        get_target_property(type ${t} TYPE)
+        if(type STREQUAL "EXECUTABLE")
+            list(APPEND acc ${t})
+        endif()
+    endforeach()
+
+    foreach(sub IN LISTS subs)
+        la_collect_executables("${sub}" inner)
+        list(APPEND acc ${inner})
+    endforeach()
+
+    set(${out_var} "${acc}" PARENT_SCOPE)
+endfunction()
+
 if(LIBDEGORASASI_BUILD_EXAMPLES)
     add_subdirectory(examples)
+    la_collect_executables("${CMAKE_CURRENT_SOURCE_DIR}/examples" LA_EXAMPLE_TARGETS)
 endif()
 
 if(LIBDEGORASASI_BUILD_TESTING)
@@ -176,14 +199,39 @@ if(LIBDEGORASASI_INSTALL)
     include(CMakePackageConfigHelpers)
 
     set(LA_PKG_NAME  DegorasASI)
-    set(LA_CMAKE_DIR ${CMAKE_INSTALL_LIBDIR}/cmake/${LA_PKG_NAME})
+
+    # -- vcpkg-shaped prefix ------------------------------------------------------------------------------------------
+    #
+    # The prefix is ONE TRIPLET directory shared by both configurations, laid out exactly as vcpkg's
+    # installed/<triplet>: release artefacts at the top, debug ones under debug/, and the CMake package files in
+    # share/<pkg>/. Two consequences worth stating, because both were problems before:
+    #
+    #   * Debug and Release can now live in ONE prefix. This library defines no debug postfix, so with a flat layout
+    #     the second install silently overwrote the first one's DLL and its export files. Keeping them apart by
+    #     configuration -- rather than by preset name -- is what vcpkg does and is why the prefix is keyed on the
+    #     triplet instead.
+    #   * install(EXPORT) emits a per-configuration <pkg>Targets-<config>.cmake and a <pkg>Targets.cmake that globs
+    #     them, so installing Debug and then Release into the same prefix leaves BOTH usable to a consumer. That only
+    #     works while the two installs agree on the share/<pkg>/ location, which is why it is not per-config.
+    #
+    # Because the layout already matches, a vcpkg port needs no vcpkg_cmake_config_fixup() to relocate anything.
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        set(LA_RUNTIME_DIR "debug/${CMAKE_INSTALL_BINDIR}")
+        set(LA_LIBRARY_DIR "debug/${CMAKE_INSTALL_LIBDIR}")
+    else()
+        set(LA_RUNTIME_DIR "${CMAKE_INSTALL_BINDIR}")
+        set(LA_LIBRARY_DIR "${CMAKE_INSTALL_LIBDIR}")
+    endif()
+
+    set(LA_CMAKE_DIR  "${CMAKE_INSTALL_DATADIR}/${LA_PKG_NAME}")
+    set(LA_TOOLS_DIR  "tools/${LA_PKG_NAME}")
 
     # Library + export set. Runtime component = what an end user runs; Development = what a downstream builder needs.
     install(TARGETS LibDegorasASI
         EXPORT ${LA_PKG_NAME}Targets
-        RUNTIME  DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT Runtime
-        LIBRARY  DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT Runtime NAMELINK_COMPONENT Development
-        ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT Development
+        RUNTIME  DESTINATION ${LA_RUNTIME_DIR} COMPONENT Runtime
+        LIBRARY  DESTINATION ${LA_LIBRARY_DIR} COMPONENT Runtime NAMELINK_COMPONENT Development
+        ARCHIVE  DESTINATION ${LA_LIBRARY_DIR} COMPONENT Development
         INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
     # Public headers, including the extensionless Modules aggregators.
@@ -205,6 +253,11 @@ if(LIBDEGORASASI_INSTALL)
     else()
         set(LA_ASI_FIND_DEPENDENCY "find_dependency(ASICamera)")
     endif()
+
+    # Recorded so DegorasASIConfig.cmake can warn a consumer built with a different toolchain: the triplet in the
+    # path deliberately omits the compiler version to stay vcpkg-path-compatible, so this is where it lives.
+    set(LA_BUILD_COMPILER_ID      "${CMAKE_CXX_COMPILER_ID}")
+    set(LA_BUILD_COMPILER_VERSION "${CMAKE_CXX_COMPILER_VERSION}")
 
     configure_package_config_file(
         ${CMAKE_CURRENT_SOURCE_DIR}/cmake/${LA_PKG_NAME}Config.cmake.in
@@ -235,7 +288,7 @@ if(LIBDEGORASASI_INSTALL)
     # Vendored ZWO ASI runtime library (opt-out via LIBDEGORASASI_INSTALL_ASI_RUNTIME=OFF).
     if(LIBDEGORASASI_INSTALL_ASI_RUNTIME AND ASI_RUNTIME_FILES)
         install(FILES ${ASI_RUNTIME_FILES}
-            DESTINATION ${CMAKE_INSTALL_BINDIR}
+            DESTINATION ${LA_RUNTIME_DIR}
             COMPONENT Runtime)
     endif()
 
@@ -251,7 +304,24 @@ if(LIBDEGORASASI_INSTALL)
         install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/examples/
             DESTINATION ${CMAKE_INSTALL_DOCDIR}/examples
             COMPONENT Examples)
+
+        # And the built demos, when they were built. tools/<pkg>/ is vcpkg's home for a port's executables; they are
+        # deliberately NOT in bin/, which is for the runtime a consumer links against.
+        if(LIBDEGORASASI_BUILD_EXAMPLES AND LA_EXAMPLE_TARGETS)
+            install(TARGETS ${LA_EXAMPLE_TARGETS}
+                RUNTIME DESTINATION ${LA_TOOLS_DIR}
+                COMPONENT Examples)
+        endif()
     endif()
+
+    # -- ABI witness --------------------------------------------------------------------------------------------------
+    #
+    # The public API passes std::string, std::vector, std::function and std::chrono across the library boundary, so a
+    # shared build and its consumers must share one toolchain and standard library. The triplet in the prefix path
+    # records the ABI (arch, CRT and library linkage) but NOT the compiler version, deliberately: adding it would
+    # break path compatibility with vcpkg, which is a goal here.
+    #
+    # (recorded above, before the package config is generated)
 
 endif()
 

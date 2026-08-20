@@ -18,4 +18,27 @@ find_dependency(Threads)
 
 include("${CMAKE_CURRENT_LIST_DIR}/DegorasASITargets.cmake")
 
+# -- ABI check ---------------------------------------------------------------------------------------------------------
+#
+# The public API passes std::string, std::vector, std::function and std::chrono across the library boundary, so a
+# shared build and its consumer must share one toolchain and standard library. The deploy path is keyed on the vcpkg
+# triplet, which records arch and linkage but NOT the compiler version -- on purpose, to stay path-compatible with
+# vcpkg. The version is therefore recorded here instead, and a mismatch is reported now rather than as a puzzling
+# crash later. A warning, not an error: a patch-level difference is usually fine, and the consumer may know better.
+set(DegorasASI_BUILD_COMPILER_ID      "@LA_BUILD_COMPILER_ID@")
+set(DegorasASI_BUILD_COMPILER_VERSION "@LA_BUILD_COMPILER_VERSION@")
+
+if(NOT CMAKE_CXX_COMPILER_ID STREQUAL DegorasASI_BUILD_COMPILER_ID)
+    message(WARNING
+        "DegorasASI was built with ${DegorasASI_BUILD_COMPILER_ID} "
+        "${DegorasASI_BUILD_COMPILER_VERSION} but you are using ${CMAKE_CXX_COMPILER_ID} "
+        "${CMAKE_CXX_COMPILER_VERSION}. The public API passes standard-library types across the boundary, so mixing "
+        "compilers is not supported.")
+elseif(NOT CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL DegorasASI_BUILD_COMPILER_VERSION)
+    message(WARNING
+        "DegorasASI was built with ${DegorasASI_BUILD_COMPILER_ID} ${DegorasASI_BUILD_COMPILER_VERSION}, "
+        "you are using ${CMAKE_CXX_COMPILER_VERSION}. Standard-library types cross this library's boundary, so "
+        "rebuild it with the current toolchain if you hit unexplained crashes.")
+endif()
+
 check_required_components(DegorasASI)

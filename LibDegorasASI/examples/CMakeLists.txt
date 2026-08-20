@@ -12,4 +12,7 @@ add_subdirectory(asi_camera_frame_callback)
 add_subdirectory(asi_camera_view)
 add_subdirectory(asi_camera_shoot)
 
+# OPTIONAL: skips itself when OpenCV is absent, so the library keeps building with no imaging toolkit installed.
+add_subdirectory(asi_camera_live)
+
 # **********************************************************************************************************************
