@@ -34,7 +34,14 @@ endif()
 
 message(STATUS "asi_camera_live: enabled with OpenCV ${OpenCV_VERSION}")
 
-add_executable(Example_asi_camera_live main.cpp)
+# Model, view, controller and the pixel layer, one pair of files each. See the comment at the top of main.cpp for
+# why this example is split at all: the single-file version froze its own window for the length of every exposure.
+add_executable(Example_asi_camera_live
+    main.cpp
+    live_image.cpp
+    live_model.cpp
+    live_view.cpp
+    live_controller.cpp)
 
 target_link_libraries(Example_asi_camera_live PRIVATE
     DegorasASI
