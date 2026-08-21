@@ -36,7 +36,14 @@
 //  nothing at all. That is the same failure as the assertions being compiled out in Release: a result that looks
 //  like a result and is not one.
 //
-//  THE TWO MODES, because both are wanted.
+//  THREE STATES, not two. A camera can be absent, present and free, or present and HELD BY ANOTHER PROCESS --
+//  the last of which used to be invisible. The ASI SDK reports no exclusivity at all (a second process opens and
+//  initialises an already-streaming camera with ASI_SUCCESS), so the two then fight and every run fails at a
+//  different assertion. asi_camera_lock.h adds the host-wide claim that makes the state observable, and this gate
+//  refuses to run rather than produce a random red suite. The message names the holder, e.g.
+//  "held by pid 19340 (Example_asi_camera_live.exe)".
+//
+//  THE TWO MODES, because both are wanted, and they apply to a missing camera and a held one alike.
 //
 //    * DEFAULT -- no camera means SKIPPED, and it says so. Exit status 77, which CTest reports as "Skipped" when
 //      the test carries SKIP_RETURN_CODE 77 (set for every Test_* in the subgroup CMakeLists). Not a pass, not a
@@ -62,6 +69,7 @@
 
 // PROJECT INCLUDES
 #include <LibDegorasASI/Modules/Devices>
+#include <LibDegorasASI/Modules/ASI>
 
 // =====================================================================================================================
 
@@ -124,6 +132,28 @@ inline dpasi::types::CameraId requireCamera(const char* test_name, const char* m
     CameraId id = cameras.front().id;
     if (argc > 1)
         id = static_cast<CameraId>(std::atoi(argv[1]));
+
+    // ANOTHER PROCESS MAY HOLD IT, and the SDK will not say so: measured, a second process enumerates, opens and
+    // initialises an already-streaming camera with ASI_SUCCESS throughout, after which the two fight and the
+    // failures are random. The host-wide claim in asi_camera_lock.h is what makes the question answerable, so ask
+    // it BEFORE running a suite that would otherwise fail at a different assertion every time.
+    const std::string holder = dpasi::asi::describeCameraHolder(id);
+    if (!holder.empty())
+    {
+        if (cameraIsRequired())
+        {
+            std::cout << test_name << ": FAILED -- camera " << dpasi::types::toType(id)
+                      << " is held by " << holder << ", and DPASI_REQUIRE_CAMERA is set.\n"
+                      << "  Close that program and retry." << std::endl;
+            std::exit(1);
+        }
+
+        std::cout << test_name << ": SKIPPED -- camera " << dpasi::types::toType(id)
+                  << " is held by " << holder << ".\n"
+                  << "  Close that program to run the hardware tests." << std::endl;
+        std::exit(kCTestSkip);
+    }
+
     std::cout << "Using camera id " << dpasi::types::toType(id) << "\n";
     return id;
 }

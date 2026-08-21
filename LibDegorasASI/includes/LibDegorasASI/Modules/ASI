@@ -25,12 +25,14 @@
 // MODULE: ASI
 // The ZWO ASI vendor layer: raw-error decoding and category mapping (asi_error), the process-global / per-camera /
 // acquisition lock scopes (asi_api_lock), camera discovery and SDK version (asi_discovery), the process-wide camera
-// ownership registry (asi_camera_registry), and the AsiCameraController adapter -- the only class that knows the
-// ASICamera2 C API. Include with: #include <LibDegorasASI/Modules/ASI>
+// ownership registry (asi_camera_registry) with its host-wide counterpart (asi_camera_lock), and the
+// AsiCameraController adapter -- the only class that knows the ASICamera2 C API.
+// Include with: #include <LibDegorasASI/Modules/ASI>
 // =====================================================================================================================
 
 #include <LibDegorasASI/ASI/asi_error.h>
 #include <LibDegorasASI/ASI/asi_api_lock.h>
 #include <LibDegorasASI/ASI/asi_camera_registry.h>
+#include <LibDegorasASI/ASI/asi_camera_lock.h>
 #include <LibDegorasASI/ASI/asi_discovery.h>
 #include <LibDegorasASI/ASI/asi_camera_controller.h>

@@ -31,6 +31,7 @@
 #include "LibDegorasASI/Devices/asi_camera.h"
 #include "LibDegorasASI/ASI/asi_api_lock.h"
 #include "LibDegorasASI/ASI/asi_camera_registry.h"
+#include "LibDegorasASI/ASI/asi_camera_lock.h"
 #include "LibDegorasASI/ASI/asi_discovery.h"
 #include "LibDegorasASI/Helpers/wait_for.h"
 
@@ -131,13 +132,27 @@ OperationResult AsiCamera::doConnect(const DeviceConfig& cfg)
 
     // The SDK gives no aliasing protection of its own: opening an already-open camera returns success, so two objects
     // would each believe they owned it. The claim is what makes CAMERA_IN_USE meaningful.
+    //
+    // TWO SCOPES, cheapest first. tryClaimCamera() covers this process and is a set lookup; tryLockCameraOnHost()
+    // covers every other process on the machine and touches the filesystem, so it only runs once the local answer is
+    // yes. The second was added because the first is not enough and the SDK will not help: measured with one process
+    // streaming, a second process still enumerated the camera, opened it and initialised it, all ASI_SUCCESS, and the
+    // two then fought -- enumeration returning empty four times in six, exposures failing at random. See
+    // asi_camera_lock.h for the measurements and for why the host-wide lock fails open.
     if (!asi::tryClaimCamera(this->id_))
         return OperationResult::CAMERA_IN_USE;
+
+    if (!asi::tryLockCameraOnHost(this->id_))
+    {
+        asi::releaseCamera(this->id_);
+        return OperationResult::CAMERA_IN_USE;
+    }
 
     DeviceError err = this->ctrl_.open();
     if (!err.ok())
     {
         asi::releaseCamera(this->id_);
+        asi::unlockCameraOnHost(this->id_);
         return err.category;
     }
 
@@ -146,6 +161,7 @@ OperationResult AsiCamera::doConnect(const DeviceConfig& cfg)
     {
         this->ctrl_.close();
         asi::releaseCamera(this->id_);
+        asi::unlockCameraOnHost(this->id_);
         return err.category;
     }
 
@@ -157,6 +173,7 @@ OperationResult AsiCamera::doConnect(const DeviceConfig& cfg)
     {
         this->ctrl_.close();
         asi::releaseCamera(this->id_);
+        asi::unlockCameraOnHost(this->id_);
         return err.category;
     }
 
@@ -247,6 +264,9 @@ void AsiCamera::releaseConnection() noexcept
     if (this->i_own_claim_)
     {
         asi::releaseCamera(this->id_);
+        // Released here rather than at process exit, so a long-lived program can disconnect and let the viewer -- or
+        // the test suite -- have the camera without being restarted.
+        asi::unlockCameraOnHost(this->id_);
         this->i_own_claim_ = false;
     }
 }

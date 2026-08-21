@@ -69,6 +69,7 @@
 #include <opencv2/imgproc.hpp>
 
 // PROJECT INCLUDES
+#include <LibDegorasASI/Modules/ASI>
 #include <LibDegorasASI/Modules/Devices>
 #include <LibDegorasASI/Modules/Helpers>
 
@@ -608,9 +609,23 @@ int main(int argc, char** argv)
     const types::CameraId id = (opt.camera >= 0) ? static_cast<types::CameraId>(opt.camera) : cameras.front().id;
 
     AsiCamera camera(id);
-    if (camera.doConnect() != OperationResult::OPERATION_OK)
+    const OperationResult conn = camera.doConnect();
+    if (conn != OperationResult::OPERATION_OK)
     {
-        std::cout << "Could not connect to camera id " << types::toType(id) << "\n";
+        // CAMERA_IN_USE is by far the most common failure here and the generic message hid it. The library takes a
+        // host-wide claim at connect precisely so this can be answered, and answered with a name.
+        if (conn == OperationResult::CAMERA_IN_USE)
+        {
+            const std::string holder = asi::describeCameraHolder(id);
+            std::cout << "Camera " << types::toType(id) << " is already in use"
+                      << (holder.empty() ? std::string() : (" by " + holder)) << ".\n"
+                      << "Close that program first; the ASI SDK cannot share a camera between processes.\n";
+        }
+        else
+        {
+            std::cout << "Could not connect to camera id " << types::toType(id)
+                      << ": " << types::toString(conn) << "\n";
+        }
         return 1;
     }
 
