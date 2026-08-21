@@ -34,10 +34,14 @@
 //
 // WHY SDL2 AND NOT OPENCV
 // OpenCV was the obvious first choice and was tried first. The OpenCV in this environment builds highgui against Qt,
-// so its config does find_dependency(Qt6 COMPONENTS ... Core5Compat ...). vcpkg's qtbase does not provide Core5Compat
-// and MSYS2's Qt6 config fails on this machine, and the failure lands inside OpenCV's own cmake_policy(PUSH) block,
-// so the error is the misleading "cmake_policy PUSH without matching POP". SDL2 needs none of that: a window, a
-// texture and a key queue is the whole requirement here, and RGB24 needs no conversion at all -- see below.
+// so its config runs find_dependency(Qt6 COMPONENTS ... Core5Compat ...); the qt5compat port was not installed then,
+// that dependency failed, and because the failure lands inside OpenCV's own cmake_policy(PUSH) block the error read
+// as the misleading "cmake_policy PUSH without matching POP".
+//
+// That obstacle no longer exists -- qt5compat is installed and find_package(OpenCV) resolves cleanly. SDL2 stays,
+// for a better reason than the original one: linking the OpenCV GUI would pull Qt into an example of a library whose
+// entire premise is that no GUI toolkit is anywhere near it. A window, a texture and a key queue is the whole
+// requirement here, and RGB24 needs no conversion at all -- see below.
 // ---------------------------------------------------------------------------------------------------------------------
 
 // C++ INCLUDES

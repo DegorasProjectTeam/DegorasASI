@@ -8,10 +8,16 @@
 # QUIET, and a return() rather than a fatal error: a hard find_package here would abort the configure of a library
 # that does not need SDL2 at all, which is precisely the failure this guard exists to prevent.
 #
-# On SDL2 rather than OpenCV, which was tried first: the OpenCV in this environment builds highgui against Qt, so its
-# config runs find_dependency(Qt6 COMPONENTS ... Core5Compat ...). vcpkg's qtbase has no Core5Compat and the MSYS2
-# Qt6 config fails here, and because that failure happens inside OpenCV's own cmake_policy(PUSH) block it surfaces as
-# the thoroughly misleading "cmake_policy PUSH without matching POP". SDL2 needs none of it.
+# ON SDL2 RATHER THAN OPENCV, which was tried first. The OpenCV in this environment builds highgui against Qt, so
+# OpenCVModules.cmake runs find_dependency(Qt6 COMPONENTS ... Core5Compat ...). At the time this example was written
+# the qt5compat port was not installed, that find_dependency failed, and because the failure happens inside OpenCV's
+# own cmake_policy(PUSH) block it surfaced as the thoroughly misleading "cmake_policy PUSH without matching POP".
+#
+# That specific obstacle is gone: qt5compat 6.11.1 is installed now and find_package(OpenCV) resolves cleanly (see
+# HelloWorlds/HelloWorldOpenCV, which exercises it). SDL2 nevertheless remains the right dependency HERE, and for a
+# better reason than the one above: linking the OpenCV GUI would drag Qt into an example of a library whose whole
+# point is that it has no Qt and no GUI toolkit anywhere near it. SDL2 needs none of that -- it is a window, a
+# texture and a blit.
 # ----------------------------------------------------------------------------------------------------------------------
 
 find_package(SDL2 QUIET)
