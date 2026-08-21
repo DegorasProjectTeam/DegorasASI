@@ -68,6 +68,27 @@ endif()
 # The compiler prefix last, as a fallback for anything vcpkg does not carry.
 list(APPEND CMAKE_PREFIX_PATH "${_PFX}")
 
+# ...and, when CMake is new enough to support it, not even as a fallback for PACKAGES.
+#
+# Ordering alone is fragile: it only has to be got wrong once, anywhere -- a stray list(PREPEND) in a preset, a
+# find_package(HINTS), a dependency's own config -- and MSYS2's copy of a package silently wins again. Measured:
+# with the prefix order deliberately broken, neither an environment CMAKE_PREFIX_PATH nor even an environment
+# Qt6_DIR pointing at vcpkg rescues it; CMAKE_IGNORE_PREFIX_PATH is the only lever that still does.
+#
+# So state the policy instead of relying on an order: MSYS2 supplies the COMPILER and its runtime, vcpkg supplies
+# the PACKAGES, and the two are never mixed. The compiler, its runtime libraries and the linker's default search
+# paths are unaffected -- this touches find_package/find_library prefix search only.
+#
+# THE TRADE-OFF, stated plainly: a package that exists ONLY in the MSYS2 prefix becomes unfindable, and the error
+# will be a plain "Could NOT find <X>" with no hint that it was deliberately hidden. If that happens and the
+# package genuinely has no vcpkg port, delete this block -- do not "fix" it by re-prepending the prefix above.
+# Verified with the current dependency set: the library, all examples and the whole test suite configure and build
+# clean, and SDL2 is still found (from vcpkg).
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.23")
+    list(APPEND CMAKE_IGNORE_PREFIX_PATH "${_PFX}")
+    list(REMOVE_DUPLICATES CMAKE_IGNORE_PREFIX_PATH)
+endif()
+
 # The toolchain file is re-read for every try_compile, and CMAKE_PREFIX_PATH is inherited into those, so without this
 # the list grows a duplicate of each entry per pass. Cosmetic, but it makes the configure output unreadable.
 list(REMOVE_DUPLICATES CMAKE_PREFIX_PATH)
