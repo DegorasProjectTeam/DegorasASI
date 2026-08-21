@@ -48,6 +48,10 @@ namespace
 /// Interval between exposure-state polls while waiting for a single frame.
 constexpr int kExposurePollMs = 2;
 
+// The per-frame wait the short startFrameAcquisition() overload carries. Named rather than written inline so the
+// value the overload stands for is findable, which is the whole reason for preferring an overload to a default.
+constexpr int kDefaultAcquisitionTimeoutMs = 1000;
+
 /// Scale factor between the SDK's raw temperature control and degrees Celsius.
 constexpr double kTemperatureScale = 10.0;
 
@@ -55,6 +59,14 @@ constexpr double kTemperatureScale = 10.0;
 constexpr int kMaxCaptureWaitMs = 30000;
 
 } // namespace
+
+// ---------------------------------------------------------------------------------------------------------------------
+
+DeviceConfig::DeviceConfig() :
+    disable_dark_subtract(true),
+    reset_flip(true),
+    telemetry_rate_ms(500)
+{}
 
 // ---------------------------------------------------------------------------------------------------------------------
 
@@ -109,6 +121,11 @@ bool AsiCamera::isConnected() const
 }
 
 // -- Connection -------------------------------------------------------------------------------------------------------
+
+OperationResult AsiCamera::doConnect()
+{
+    return this->doConnect(DeviceConfig());
+}
 
 OperationResult AsiCamera::doConnect(const DeviceConfig& cfg)
 {
@@ -492,6 +509,11 @@ OperationResult AsiCamera::setIntControl(ControlType type, int value)
     return this->doSetControl(type, control);
 }
 
+OperationResult AsiCamera::doSetUsbBandwidth(int percent)
+{
+    return this->doSetUsbBandwidth(percent, false);
+}
+
 OperationResult AsiCamera::doSetUsbBandwidth(int percent, bool automatic)
 {
     ControlValue value;
@@ -796,6 +818,11 @@ OperationResult AsiCamera::getDroppedFrames(int& dropped)
 
 // -- Acquisition: single frame (snapshot) -----------------------------------------------------------------------------
 
+OperationResult AsiCamera::doStartExposure()
+{
+    return this->doStartExposure(false);
+}
+
 OperationResult AsiCamera::doStartExposure(bool dark)
 {
     // Held across the whole arm sequence, for exactly the reason given in doStartVideoCapture: otherwise the sensor is
@@ -886,6 +913,11 @@ OperationResult AsiCamera::doGetExposureFrame(Frame& frame)
     return err.category;
 }
 
+OperationResult AsiCamera::doCaptureSingleFrame(Frame& frame, std::chrono::milliseconds timeout)
+{
+    return this->doCaptureSingleFrame(frame, timeout, false);
+}
+
 OperationResult AsiCamera::doCaptureSingleFrame(Frame& frame, std::chrono::milliseconds timeout, bool dark)
 {
     const OperationResult started = this->doStartExposure(dark);
@@ -974,6 +1006,11 @@ OperationResult AsiCamera::setNewFrameCb(NewFrameCb cb)
     const std::lock_guard<std::mutex> lock(this->cb_mtx_);
     this->frame_cb_ = std::move(cb);
     return OperationResult::OPERATION_OK;
+}
+
+OperationResult AsiCamera::startFrameAcquisition()
+{
+    return this->startFrameAcquisition(std::chrono::milliseconds(kDefaultAcquisitionTimeoutMs));
 }
 
 OperationResult AsiCamera::startFrameAcquisition(std::chrono::milliseconds timeout)

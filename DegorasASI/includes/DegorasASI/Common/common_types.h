@@ -243,10 +243,19 @@ DEGORASASI_EXPORT std::string toString(AcquisitionMode mode);
  */
 struct DEGORASASI_EXPORT RoiFormat
 {
+    /// @brief Establishes an empty, unbinned RAW8 geometry: no ROI is implied until one is read from a camera.
     RoiFormat();
 
-    /// @brief Serialise the format to a JSON string (pretty-printed when @p pretty is true).
-    std::string toJsonStr(bool pretty = false) const;
+    /// @brief Serialise the format to a compact, single-line JSON string.
+    std::string toJsonStr() const;
+
+    /**
+     * @brief Serialise the format to a JSON string, pretty-printed when @p pretty is true.
+     * @note The compact form is a separate overload rather than a defaulted argument, here and everywhere else in this
+     *       header: a default argument in a shared library is compiled into the CALLER, so changing it later would
+     *       need every client rebuilt, whereas an overload lives in the library and ships with it.
+     */
+    std::string toJsonStr(bool pretty) const;
 
     /// @brief Parse a format from a JSON string produced by toJsonStr(); missing fields keep their defaults.
     static RoiFormat fromJsonStr(const std::string& json);
@@ -265,10 +274,14 @@ struct DEGORASASI_EXPORT RoiFormat
  */
 struct DEGORASASI_EXPORT RoiPosition
 {
+    /// @brief Establishes the origin at the sensor's top-left corner, (0, 0).
     RoiPosition();
 
-    /// @brief Serialise the position to a JSON string (pretty-printed when @p pretty is true).
-    std::string toJsonStr(bool pretty = false) const;
+    /// @brief Serialise the position to a compact, single-line JSON string.
+    std::string toJsonStr() const;
+
+    /// @brief Serialise the position to a JSON string, pretty-printed when @p pretty is true.
+    std::string toJsonStr(bool pretty) const;
 
     /// @brief Parse a position from a JSON string produced by toJsonStr(); missing fields keep their defaults.
     static RoiPosition fromJsonStr(const std::string& json);
@@ -283,10 +296,14 @@ struct DEGORASASI_EXPORT RoiPosition
  */
 struct DEGORASASI_EXPORT ControlCaps
 {
+    /// @brief Establishes an empty, non-writable description of the GAIN control, with a zero range.
     ControlCaps();
 
-    /// @brief Serialise the capabilities to a JSON string (pretty-printed when @p pretty is true).
-    std::string toJsonStr(bool pretty = false) const;
+    /// @brief Serialise the capabilities to a compact, single-line JSON string.
+    std::string toJsonStr() const;
+
+    /// @brief Serialise the capabilities to a JSON string, pretty-printed when @p pretty is true.
+    std::string toJsonStr(bool pretty) const;
 
     /// @brief Parse capabilities from a JSON string produced by toJsonStr(); missing fields keep their defaults.
     static ControlCaps fromJsonStr(const std::string& json);
@@ -306,10 +323,14 @@ using ControlCapsList = std::vector<ControlCaps>;   ///< All controls a camera e
 /// Current value of one camera control.
 struct DEGORASASI_EXPORT ControlValue
 {
+    /// @brief Establishes a zero value that is not being driven automatically.
     ControlValue();
 
-    /// @brief Serialise the value to a JSON string (pretty-printed when @p pretty is true).
-    std::string toJsonStr(bool pretty = false) const;
+    /// @brief Serialise the value to a compact, single-line JSON string.
+    std::string toJsonStr() const;
+
+    /// @brief Serialise the value to a JSON string, pretty-printed when @p pretty is true.
+    std::string toJsonStr(bool pretty) const;
 
     /// @brief Parse a value from a JSON string produced by toJsonStr(); missing fields keep their defaults.
     static ControlValue fromJsonStr(const std::string& json);
@@ -324,10 +345,14 @@ struct DEGORASASI_EXPORT ControlValue
  */
 struct DEGORASASI_EXPORT CameraDescriptor
 {
+    /// @brief Establishes an empty descriptor: camera 0, no name, zeroed sensor geometry and no declared capability.
     CameraDescriptor();
 
-    /// @brief Serialise the descriptor to a JSON string (pretty-printed when @p pretty is true).
-    std::string toJsonStr(bool pretty = false) const;
+    /// @brief Serialise the descriptor to a compact, single-line JSON string.
+    std::string toJsonStr() const;
+
+    /// @brief Serialise the descriptor to a JSON string, pretty-printed when @p pretty is true.
+    std::string toJsonStr(bool pretty) const;
 
     /// @brief Parse a descriptor from a JSON string produced by toJsonStr(); missing fields keep their defaults.
     static CameraDescriptor fromJsonStr(const std::string& json);
@@ -348,7 +373,7 @@ struct DEGORASASI_EXPORT CameraDescriptor
     /// @brief The speed the link is actually negotiated at: USB3 only when BOTH the camera and the host are USB3.
     UsbLinkSpeed linkSpeed() const;
 
-    CameraId id;                                ///< SDK addressing key. Volatile across attach/detach.
+    CameraId id;                                 ///< SDK addressing key. Volatile across attach/detach.
     std::string name;                            ///< Vendor model string, e.g. "ZWO ASI224MC".
     int max_width;                               ///< Sensor width in pixels (unbinned).
     int max_height;                              ///< Sensor height in pixels (unbinned).
@@ -383,6 +408,7 @@ using CameraDescriptorList = std::vector<CameraDescriptor>;   ///< Result of a d
  */
 struct DEGORASASI_EXPORT Frame
 {
+    /// @brief Establishes an empty frame: no pixels, unbinned RAW8 geometry at the origin and sequence 0.
     Frame();
 
     /// @brief True when the frame holds no image data.
@@ -391,8 +417,11 @@ struct DEGORASASI_EXPORT Frame
     /// @brief Number of image bytes the current geometry requires.
     std::size_t expectedBytes() const;
 
-    /// @brief Serialise the frame's METADATA to a JSON string (never the pixel bytes).
-    std::string toJsonStr(bool pretty = false) const;
+    /// @brief Serialise the frame's METADATA to a compact, single-line JSON string (never the pixel bytes).
+    std::string toJsonStr() const;
+
+    /// @brief Serialise the frame's METADATA (never the pixel bytes), pretty-printed when @p pretty is true.
+    std::string toJsonStr(bool pretty) const;
 
     ImageFormat format;                                  ///< Pixel layout of @ref data.
     int width;                                           ///< Frame width in pixels.
@@ -408,7 +437,7 @@ struct DEGORASASI_EXPORT Frame
     int start_y;                                         ///< See @ref start_x.
     std::uint64_t sequence;                              ///< Monotonic counter, incremented per delivered frame.
     std::chrono::system_clock::time_point timestamp;     ///< Host time at which the frame was retrieved.
-    std::vector<PixelByte> data;                                    ///< The image bytes.
+    std::vector<PixelByte> data;                         ///< The image bytes.
 };
 
 /**
@@ -421,10 +450,14 @@ struct DEGORASASI_EXPORT Frame
  */
 struct DEGORASASI_EXPORT CameraStatus
 {
+    /// @brief Establishes a disconnected, idle snapshot with no valid temperature reading and a default ROI.
     CameraStatus();
 
-    /// @brief Serialise the status to a JSON string (pretty-printed when @p pretty is true).
-    std::string toJsonStr(bool pretty = false) const;
+    /// @brief Serialise the status to a compact, single-line JSON string.
+    std::string toJsonStr() const;
+
+    /// @brief Serialise the status to a JSON string, pretty-printed when @p pretty is true.
+    std::string toJsonStr(bool pretty) const;
 
     /// @brief Parse a status from a JSON string produced by toJsonStr(); missing fields keep their defaults.
     static CameraStatus fromJsonStr(const std::string& json);
@@ -447,9 +480,12 @@ struct DEGORASASI_EXPORT CameraStatus
  */
 struct DEGORASASI_EXPORT DeviceError
 {
-    OperationResult category = OperationResult::OPERATION_OK;   ///< High-level result category.
-    int asi_code = 0;                                           ///< Raw ZWO/ASI return code (ASI_ERROR_*).
-    std::string context;                                        ///< Human context, e.g. "ASIOpenCamera(id=0)".
+    OperationResult category;   ///< High-level result category.
+    int asi_code;               ///< Raw ZWO/ASI return code (ASI_ERROR_*).
+    std::string context;        ///< Human context, e.g. "ASIOpenCamera(id=0)".
+
+    /// @brief Establishes a success: category OPERATION_OK, no raw vendor code and an empty context.
+    DeviceError();
 
     /// @brief True when the operation succeeded.
     bool ok() const;

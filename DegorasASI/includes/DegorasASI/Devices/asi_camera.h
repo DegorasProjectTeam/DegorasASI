@@ -58,11 +58,15 @@ namespace dpasi
  *       demosaiced wrong and reds come out green -- and nothing in the frame reveals it. Set it to false only if the
  *       flip is being managed deliberately, and then expect to correct the mosaic yourself.
  */
-struct DeviceConfig
+struct DEGORASASI_EXPORT DeviceConfig
 {
-    bool disable_dark_subtract = true;   ///< Clear the vendor's persistent dark-subtraction setting at connect.
-    bool reset_flip = true;              ///< Clear the vendor's persistent image flip at connect.
-    int telemetry_rate_ms = 500;         ///< Interval of the background telemetry poller, when started.
+    /// @brief Establishes the settings the notes above argue for: both persistent vendor settings cleared at connect,
+    ///        and a half-second telemetry interval.
+    DeviceConfig();
+
+    bool disable_dark_subtract;   ///< Clear the vendor's persistent dark-subtraction setting at connect.
+    bool reset_flip;              ///< Clear the vendor's persistent image flip at connect.
+    int telemetry_rate_ms;        ///< Interval of the background telemetry poller, when started.
 };
 
 /**
@@ -129,15 +133,25 @@ public:
     bool isConnected() const;                     ///< Whether the camera currently has an open connection.
 
     /**
+     * @brief Open and initialise the camera with a default-constructed DeviceConfig.
+     * @return As the overload below.
+     * @note An overload, here and everywhere else in this header, rather than one function with a defaulted argument: a
+     *       default argument is compiled into the CALLER, so changing the value later would need every client of this
+     *       shared library recompiled before it took effect, whereas an overload keeps the value inside the library and
+     *       a client picks up the new one by relinking.
+     */
+    types::OperationResult doConnect();
+
+    /**
      * @brief Open and initialise the camera. Idempotent for the object that owns the connection.
-     * @param cfg Optional connection settings.
+     * @param cfg Connection settings.
      * @return OPERATION_OK on success; ALREADY_CONNECTED if this object already owns it; CAMERA_IN_USE if another
      *         object holds it; DEVICE_NOT_FOUND if the camera is absent or is not the required model;
      *         ZWO_INTERNAL_ERROR if the SDK refused the open or the initialisation.
      * @note Discovers the control set, leaves the camera idle, and performs no acquisition. Constructors do no device
      *       I/O, so this is the first call that touches hardware.
      */
-    types::OperationResult doConnect(const DeviceConfig& cfg = DeviceConfig{});
+    types::OperationResult doConnect(const DeviceConfig& cfg);
 
     /**
      * @brief Stop any acquisition, close and release the camera. Returns NOT_CONNECTED if it was not connected.
@@ -228,6 +242,13 @@ public:
     // getControlCaps(ControlType::BANDWIDTH_OVERLOAD, caps) yields min, max and default for this camera.
 
     /**
+     * @brief Set the share of USB bandwidth this camera may occupy, as a fixed share the camera does not adjust.
+     * @param percent Bandwidth share. Valid range is per-camera; read it from the control's capabilities.
+     * @return As the overload below.
+     */
+    types::OperationResult doSetUsbBandwidth(int percent);
+
+    /**
      * @brief Set the share of USB bandwidth this camera may occupy.
      * @param percent Bandwidth share. Valid range is per-camera; read it from the control's capabilities.
      * @param automatic Let the camera manage the share itself, as the vendor software's "Auto" box does. When true,
@@ -237,7 +258,7 @@ public:
      * @note LOWERING this is the first remedy for dropped frames, especially on a degraded USB2 link; raising it trades
      *       bus headroom for frame rate. It does not change image quality, unlike @ref doSetHighSpeedMode.
      */
-    types::OperationResult doSetUsbBandwidth(int percent, bool automatic = false);
+    types::OperationResult doSetUsbBandwidth(int percent, bool automatic);
 
     /// @brief Read the current USB bandwidth share and whether the camera is managing it automatically.
     types::OperationResult getUsbBandwidth(int& percent, bool& automatic);
@@ -330,13 +351,19 @@ public:
     // -- Acquisition: single frame (snapshot) --
 
     /**
+     * @brief Begin a single light exposure, with any mechanical shutter left open.
+     * @return As the overload below.
+     */
+    types::OperationResult doStartExposure();
+
+    /**
      * @brief Begin a single exposure. Non-blocking; poll @ref getExposureState, then call @ref doGetExposureFrame.
      * @param dark True to keep a mechanical shutter closed; ignored on a camera without one.
      * @return INVALID_SEQUENCE if streaming is running or an exposure is already in progress.
      * @warning The camera's automatic exposure and gain are INERT on this path: they only act while streaming. Setting
      *          a control to auto and then taking a snapshot yields neither auto behaviour nor an error.
      */
-    types::OperationResult doStartExposure(bool dark = false);
+    types::OperationResult doStartExposure(bool dark);
 
     /// @brief Cancel an exposure in progress. @return INVALID_SEQUENCE if no exposure was in progress.
     types::OperationResult doStopExposure();
@@ -352,6 +379,13 @@ public:
     types::OperationResult doGetExposureFrame(types::Frame& frame);
 
     /**
+     * @brief Take one light frame, with any mechanical shutter left open.
+     * @param timeout Maximum total time to wait for the exposure to complete.
+     * @return As the overload below.
+     */
+    types::OperationResult doCaptureSingleFrame(types::Frame& frame, std::chrono::milliseconds timeout);
+
+    /**
      * @brief Take one frame: start an exposure, wait for it, download it and return the camera to idle.
      * @param timeout Maximum total time to wait for the exposure to complete.
      * @param dark True to keep a mechanical shutter closed; ignored on a camera without one.
@@ -362,7 +396,7 @@ public:
      */
     types::OperationResult doCaptureSingleFrame(types::Frame& frame,
                                                 std::chrono::milliseconds timeout,
-                                                bool dark = false);
+                                                bool dark);
 
     // -- Callback-driven frame acquisition --
     //
@@ -384,6 +418,12 @@ public:
     types::OperationResult setNewFrameCb(NewFrameCb cb);
 
     /**
+     * @brief Start delivering frames to the callback on a background worker, allowing one second per capture.
+     * @return As the overload below.
+     */
+    types::OperationResult startFrameAcquisition();
+
+    /**
      * @brief Start delivering frames to the callback on a background worker.
      * @param timeout How long each capture waits for a frame before reporting a timeout to the callback. Clamped to
      *        the same bounds the capture path enforces.
@@ -391,7 +431,7 @@ public:
      * @note Requires video capture to be running: call doStartVideoCapture() first. Deliberately NOT implicit, so the
      *       acquisition state machine has exactly one owner and starting a worker never silently reconfigures hardware.
      */
-    types::OperationResult startFrameAcquisition(std::chrono::milliseconds timeout = std::chrono::milliseconds(1000));
+    types::OperationResult startFrameAcquisition(std::chrono::milliseconds timeout);
 
     /**
      * @brief Stop the background frame worker. Bounded; never blocks indefinitely.

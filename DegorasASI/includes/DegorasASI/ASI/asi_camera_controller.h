@@ -77,7 +77,7 @@ public:
     // -- Camera-scoped lifecycle --
     /// @brief ASIOpenCamera. @return DEVICE_NOT_FOUND if the camera is absent or was unplugged.
     types::DeviceError open();
-    /// @brief ASIInitCamera. Blocks for a while and disturbs a camera that is capturing; never call it on a live stream.
+    /// @brief ASIInitCamera. Blocks a while and disturbs a camera that is capturing; never call it on a live stream.
     types::DeviceError initialise();
     /// @brief ASICloseCamera. Takes both the global lock and this camera's control lock, so it cannot run while a short
     ///        control call is in flight on the same camera.
@@ -119,7 +119,7 @@ public:
     /**
      * @brief Retrieve the next streamed frame, blocking until one arrives or @p timeout elapses.
      * @param[out] out_frame Resized to the live ROI only when the geometry changed, then filled; its metadata is set.
-     * @param timeout How long to wait for a frame. Clamped to a bounded maximum; the SDK's "wait forever" is never used.
+     * @param timeout How long to wait for a frame. Clamped to a bounded maximum; the SDK's "wait forever" is unused.
      * @return OPERATION_OK on success, OPERATION_TIMEOUT if no frame arrived, BUFFER_TOO_SMALL if the live geometry
      *         could not be established, NOT_CONNECTED if the camera closed.
      * @note BLOCKS for up to @p timeout while holding acquisitionMtx(id). Reuse one Frame across a loop: the buffer is

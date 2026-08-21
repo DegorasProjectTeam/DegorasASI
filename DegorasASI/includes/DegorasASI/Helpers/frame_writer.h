@@ -95,15 +95,26 @@ struct DEGORASASI_EXPORT FitsCard
 
 using FitsCards = std::vector<FitsCard>;   ///< Extra cards to record alongside the mandatory ones.
 
+// Where a parameter may be left out, this header declares an OVERLOAD rather than defaulting it. A default argument
+// is compiled into the CALLER, so revising it later would leave every already-built client using the old value until
+// it is recompiled; a value carried by an overload lives in the library and travels with the shared object. Applies
+// to every overload pair below.
+//
+// Plain comment rather than doxygen on purpose: a /** */ block attached to nothing is bound by doxygen to the NEXT
+// entity, which would have given the function below two competing descriptions.
+
 /// @brief A card holding an integer, e.g. fitsInt("GAIN", 450, "sensor gain").
-DEGORASASI_EXPORT FitsCard fitsInt(const std::string& key, long long value, const std::string& comment = {});
+DEGORASASI_EXPORT FitsCard fitsInt(const std::string& key, long long value, const std::string& comment);
 
 /// @brief A card holding a floating-point value, e.g. fitsReal("EXPTIME", 0.2, "exposure time in seconds").
-DEGORASASI_EXPORT FitsCard fitsReal(const std::string& key, double value, const std::string& comment = {});
+DEGORASASI_EXPORT FitsCard fitsReal(const std::string& key, double value, const std::string& comment);
+
+/// @brief A card holding text with no comment, e.g. fitsText("OBJECT", "M31"). Quoting is handled here.
+DEGORASASI_EXPORT FitsCard fitsText(const std::string& key, const std::string& value);
 
 /// @brief A card holding text, e.g. fitsText("OBJECT", "M31", "target"). Quoting is handled here.
 DEGORASASI_EXPORT FitsCard fitsText(const std::string& key, const std::string& value,
-                                       const std::string& comment = {});
+                                       const std::string& comment);
 
 /**
  * @brief The BAYERPAT card for a colour sensor's mosaic, e.g. BayerPattern::RG becomes "RGGB".
@@ -153,9 +164,21 @@ DEGORASASI_EXPORT FitsCard fitsBayerPattern(types::BayerPattern pattern);
  *       are written only alongside a surviving BAYERPAT, since with no mosaic they mean nothing.
  */
 DEGORASASI_EXPORT bool writeFits(const types::Frame& frame, const std::string& path,
-                                    const FitsCards& extra = FitsCards());
+                                    const FitsCards& extra);
 
-// -- Dispatch ----------------------------------------------------------------------------------------------------------
+/**
+ * @brief Write a frame as a FITS image carrying only the mandatory header cards.
+ * @param frame The frame to write. Any of RAW8, Y8, RAW16 or RGB24.
+ * @param path Destination path.
+ * @return False if the frame is empty or inconsistent, or the file could not be written.
+ * @see writeFits(const types::Frame&, const std::string&, const FitsCards&) for the layout and Bayer notes.
+ * @warning A file written this way records no exposure, gain, temperature or Bayer pattern, none of which the frame
+ *          itself carries. Prefer the overload taking extra cards whenever the frame is being KEPT rather than
+ *          glanced at: what is missing here cannot be recovered later.
+ */
+DEGORASASI_EXPORT bool writeFits(const types::Frame& frame, const std::string& path);
+
+// -- Dispatch ---------------------------------------------------------------------------------------------------------
 
 /**
  * @brief Write a frame with whichever writer fits its format: BMP for RGB24, PGM otherwise.
@@ -177,7 +200,15 @@ DEGORASASI_EXPORT std::string extensionFor(types::ImageFormat format);
  *       question when a camera is plugged in for the first time. Returned rather than printed so it can go to a log,
  *       a status pane or a test assertion just as easily as to a terminal.
  */
-DEGORASASI_EXPORT std::string framePreview(const types::Frame& frame, int columns = 64);
+DEGORASASI_EXPORT std::string framePreview(const types::Frame& frame, int columns);
+
+/**
+ * @brief Render a frame as a coarse ASCII brightness map at the library's default width.
+ * @param frame The frame to render.
+ * @return The map as newline-separated rows, or an empty string if the frame is empty.
+ * @see framePreview(const types::Frame&, int) for how the width governs the aspect ratio.
+ */
+DEGORASASI_EXPORT std::string framePreview(const types::Frame& frame);
 
 // ---------------------------------------------------------------------------------------------------------------------
 

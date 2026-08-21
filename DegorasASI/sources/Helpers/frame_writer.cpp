@@ -48,6 +48,10 @@ namespace
 const char* const kPreviewRamp = " .:-=+*#%@";
 constexpr int kPreviewRampLen = 10;
 
+/// Width of the map produced by the one-argument framePreview(): wide enough to make out a star field, narrow enough
+/// for any terminal.
+constexpr int kDefaultPreviewColumns = 64;
+
 /// Whether the frame's geometry and buffer agree, so no writer indexes past the end.
 bool isConsistent(const types::Frame& frame)
 {
@@ -247,6 +251,11 @@ FitsCard fitsReal(const std::string& key, double value, const std::string& comme
     return FitsCard{key, std::string(buf), comment};
 }
 
+FitsCard fitsText(const std::string& key, const std::string& value)
+{
+    return fitsText(key, value, std::string());
+}
+
 FitsCard fitsText(const std::string& key, const std::string& value, const std::string& comment)
 {
     return FitsCard{key, fitsQuote(value), comment};
@@ -268,6 +277,11 @@ FitsCard fitsBayerPattern(types::BayerPattern pattern)
         case types::BayerPattern::GB: name = "GBRG"; break;
     }
     return fitsText("BAYERPAT", name, "colour filter array, sensor top-left");
+}
+
+bool writeFits(const types::Frame& frame, const std::string& path)
+{
+    return writeFits(frame, path, FitsCards());
 }
 
 bool writeFits(const types::Frame& frame, const std::string& path, const FitsCards& extra)
@@ -464,6 +478,11 @@ bool writeFrame(const types::Frame& frame, const std::string& path)
 std::string extensionFor(types::ImageFormat format)
 {
     return (format == types::ImageFormat::RGB24) ? std::string("bmp") : std::string("pgm");
+}
+
+std::string framePreview(const types::Frame& frame)
+{
+    return framePreview(frame, kDefaultPreviewColumns);
 }
 
 std::string framePreview(const types::Frame& frame, int columns)

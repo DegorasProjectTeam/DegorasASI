@@ -78,15 +78,28 @@ public:
     using Producer = std::function<types::OperationResult(StatusT&)>;          ///< Fills a status; returns its result.
     using Sink     = std::function<void(types::OperationResult, const StatusT&)>;  ///< Receives each poll outcome.
 
-    StatusPoller() = default;
+    /// @brief Establishes the shared sync block and the default bound on stop()'s join.
+    StatusPoller();
 
     /// @brief Stops the worker (bounded join / detach) before destruction.
-    ~StatusPoller() { this->stop(); }
+    ~StatusPoller();
 
     StatusPoller(const StatusPoller&) = delete;
     StatusPoller& operator=(const StatusPoller&) = delete;
     StatusPoller(StatusPoller&&) = delete;
     StatusPoller& operator=(StatusPoller&&) = delete;
+
+    /**
+     * @brief Start the polling worker, bounding stop()'s join at the default the constructor establishes.
+     * @param producer Called each interval to produce a status.
+     * @param sink Called each interval with the produced (result, status).
+     * @param interval Delay between polls.
+     * @return OPERATION_OK on success, WORKER_ALREADY_RUNNING if already polling, WORKER_START_ERROR on failure.
+     * @note This is an overload and not a defaulted @p join_timeout argument, which is how this library handles every
+     *       optional parameter: a default argument in a shared library is compiled into the CALLER, so correcting it
+     *       later would need every client recompiled, whereas an overload ships with the library.
+     */
+    types::OperationResult start(Producer producer, Sink sink, std::chrono::milliseconds interval);
 
     /**
      * @brief Start the polling worker.
@@ -99,68 +112,14 @@ public:
     types::OperationResult start(Producer producer,
                                  Sink sink,
                                  std::chrono::milliseconds interval,
-                                 std::chrono::milliseconds join_timeout = std::chrono::milliseconds(2000))
-    {
-        const std::lock_guard<std::mutex> lock(this->wk_mtx_);
-        if (this->worker_.joinable())
-            return types::OperationResult::WORKER_ALREADY_RUNNING;
-
-        this->join_timeout_ = join_timeout;
-        this->state_ = std::make_shared<State>();   // Fresh state per run; any detached worker keeps its own copy.
-        std::shared_ptr<State> st = this->state_;
-        st->running = true;
-
-        try
-        {
-            this->worker_ = std::thread(&StatusPoller::run, st, std::move(producer), std::move(sink), interval);
-        }
-        catch (...)
-        {
-            st->running = false;
-            return types::OperationResult::WORKER_START_ERROR;
-        }
-        return types::OperationResult::OPERATION_OK;
-    }
+                                 std::chrono::milliseconds join_timeout);
 
     /**
      * @brief Stop the polling worker.
      * @return OPERATION_OK if the worker stopped (or was detached after self-destruct), WORKER_NOT_RUNNING if it was
      *         not running, OPERATION_TIMEOUT if it had to be detached after exceeding the join timeout.
      */
-    types::OperationResult stop()
-    {
-        const std::lock_guard<std::mutex> lock(this->wk_mtx_);
-        if (!this->worker_.joinable())
-            return types::OperationResult::WORKER_NOT_RUNNING;
-
-        {
-            const std::lock_guard<std::mutex> slock(this->state_->m);
-            this->state_->stop = true;
-        }
-        this->state_->cv.notify_all();
-
-        if (this->worker_.get_id() == std::this_thread::get_id())
-        {
-            // Called from within the worker (owner destroyed inside its own callback): a self-join would deadlock.
-            this->worker_.detach();
-            return types::OperationResult::OPERATION_OK;
-        }
-
-        std::unique_lock<std::mutex> dlock(this->state_->m);
-        const bool finished = this->state_->cv.wait_for(dlock, this->join_timeout_,
-                                                        [this]{ return this->state_->done; });
-        dlock.unlock();
-
-        if (finished)
-        {
-            this->worker_.join();
-            return types::OperationResult::OPERATION_OK;
-        }
-
-        // Worker is wedged (e.g. blocking SDK call on dead hardware): detach instead of hanging shutdown.
-        this->worker_.detach();
-        return types::OperationResult::OPERATION_TIMEOUT;
-    }
+    types::OperationResult stop();
 
     /**
      * @brief True while a worker thread is active.
@@ -171,57 +130,39 @@ public:
      * @warning This is a deliberate divergence from the same helper in the sibling reference library, which has the
      *          identical latent hazard; the fix belongs upstream when this file migrates to LibDegorasBase.
      */
-    bool isRunning() const
-    {
-        return this->state_->running.load();
-    }
+    bool isRunning() const;
 
 private:
 
     /// Shared sync block, kept alive by both the poller and the (possibly detached) worker.
     struct State
     {
+        /// @brief Establishes the not-stopped, not-finished, not-running initial state.
+        State();
+
         std::mutex m;
         std::condition_variable cv;
-        bool stop = false;
-        bool done = false;
-        std::atomic<bool> running{false};   ///< Observable without the worker-lifecycle lock.
+        bool stop;
+        bool done;
+        std::atomic<bool> running;   ///< Observable without the worker-lifecycle lock.
     };
 
-    static void run(std::shared_ptr<State> st, Producer producer, Sink sink, std::chrono::milliseconds interval)
-    {
-        for (;;)
-        {
-            {
-                const std::lock_guard<std::mutex> lock(st->m);
-                if (st->stop)
-                    break;
-            }
+    static void run(std::shared_ptr<State> st, Producer producer, Sink sink, std::chrono::milliseconds interval);
 
-            StatusT status{};
-            const types::OperationResult res = producer(status);
-            sink(res, status);   // Outside all locks; non-OK is delivered, never dropped.
-
-            std::unique_lock<std::mutex> lock(st->m);
-            st->cv.wait_for(lock, interval, [&]{ return st->stop; });
-            if (st->stop)
-                break;
-        }
-
-        st->running = false;
-        const std::lock_guard<std::mutex> lock(st->m);
-        st->done = true;
-        st->cv.notify_all();
-    }
-
-    mutable std::mutex wk_mtx_;                                  ///< Guards worker lifecycle (start/stop/join).
-    std::thread worker_;                                        ///< The polling worker (joinable == running).
-    std::shared_ptr<State> state_ = std::make_shared<State>();  ///< Current run's shared sync block.
-    std::chrono::milliseconds join_timeout_{2000};              ///< Bound on stop()'s join before detaching.
+    mutable std::mutex wk_mtx_;                  ///< Guards worker lifecycle (start/stop/join).
+    std::thread worker_;                         ///< The polling worker (joinable == running).
+    std::shared_ptr<State> state_;               ///< Current run's shared sync block.
+    std::chrono::milliseconds join_timeout_;     ///< Bound on stop()'s join before detaching.
 };
 
 // ---------------------------------------------------------------------------------------------------------------------
 
 } // END NAMESPACES
+
+// ---------------------------------------------------------------------------------------------------------------------
+
+// The template implementation lives in its own file so this header stays declarations and doxygen only. It is included
+// here, at the end, because a template's definition must be visible to every translation unit that instantiates it.
+#include "DegorasASI/Helpers/status_poller.hpp"
 
 // ---------------------------------------------------------------------------------------------------------------------

@@ -34,9 +34,38 @@ namespace dpasi
 
 // ---------------------------------------------------------------------------------------------------------------------
 
+namespace
+{
+
+/// Bound on stop()'s join before the worker is detached, used by the two-argument start().
+constexpr int kDefaultJoinTimeoutMs = 5000;
+
+/// Floor between iterations after a FAILED capture. The success path never waits.
+constexpr int kErrorBackoffMs = 5;
+
+} // namespace
+
+FramePump::State::State() :
+    stop(false),
+    done(false),
+    running(false),
+    delivered(0),
+    failed(0)
+{}
+
+FramePump::FramePump() :
+    state_(std::make_shared<State>()),
+    join_timeout_(std::chrono::milliseconds(kDefaultJoinTimeoutMs))
+{}
+
 FramePump::~FramePump()
 {
     this->stop();
+}
+
+types::OperationResult FramePump::start(Producer producer, Sink sink)
+{
+    return this->start(std::move(producer), std::move(sink), std::chrono::milliseconds(kDefaultJoinTimeoutMs));
 }
 
 types::OperationResult FramePump::start(Producer producer, Sink sink, std::chrono::milliseconds join_timeout)
@@ -131,14 +160,6 @@ std::uint64_t FramePump::failedCount() const
 {
     return this->currentState()->failed.load();
 }
-
-namespace
-{
-
-/// Floor between iterations after a FAILED capture. The success path never waits.
-constexpr int kErrorBackoffMs = 5;
-
-} // namespace
 
 void FramePump::run(std::shared_ptr<State> st, Producer producer, Sink sink)
 {

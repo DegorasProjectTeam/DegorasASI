@@ -266,6 +266,11 @@ RoiFormat::RoiFormat() :
     format(ImageFormat::RAW8)
 {}
 
+std::string RoiFormat::toJsonStr() const
+{
+    return this->toJsonStr(false);
+}
+
 std::string RoiFormat::toJsonStr(bool pretty) const
 {
     std::ostringstream ss;
@@ -292,6 +297,11 @@ RoiPosition::RoiPosition() :
     start_x(0),
     start_y(0)
 {}
+
+std::string RoiPosition::toJsonStr() const
+{
+    return this->toJsonStr(false);
+}
 
 std::string RoiPosition::toJsonStr(bool pretty) const
 {
@@ -321,6 +331,11 @@ ControlCaps::ControlCaps() :
     is_auto_supported(false),
     is_writable(false)
 {}
+
+std::string ControlCaps::toJsonStr() const
+{
+    return this->toJsonStr(false);
+}
 
 std::string ControlCaps::toJsonStr(bool pretty) const
 {
@@ -356,6 +371,11 @@ ControlValue::ControlValue() :
     value(0),
     is_auto(false)
 {}
+
+std::string ControlValue::toJsonStr() const
+{
+    return this->toJsonStr(false);
+}
 
 std::string ControlValue::toJsonStr(bool pretty) const
 {
@@ -416,6 +436,11 @@ UsbLinkSpeed CameraDescriptor::linkSpeed() const
 {
     // SuperSpeed needs BOTH ends: a USB3 camera in a USB2 port negotiates USB2, and vice versa.
     return (this->is_usb3_camera && this->is_usb3_host) ? UsbLinkSpeed::USB3 : UsbLinkSpeed::USB2;
+}
+
+std::string CameraDescriptor::toJsonStr() const
+{
+    return this->toJsonStr(false);
 }
 
 std::string CameraDescriptor::toJsonStr(bool pretty) const
@@ -511,6 +536,11 @@ std::size_t Frame::expectedBytes() const
     return frameBufferSize(roi);
 }
 
+std::string Frame::toJsonStr() const
+{
+    return this->toJsonStr(false);
+}
+
 std::string Frame::toJsonStr(bool pretty) const
 {
     const std::chrono::system_clock::duration since_epoch = this->timestamp.time_since_epoch();
@@ -542,6 +572,11 @@ CameraStatus::CameraStatus() :
     dropped_frames(0),
     roi(RoiFormat())
 {}
+
+std::string CameraStatus::toJsonStr() const
+{
+    return this->toJsonStr(false);
+}
 
 std::string CameraStatus::toJsonStr(bool pretty) const
 {
@@ -576,6 +611,12 @@ CameraStatus CameraStatus::fromJsonStr(const std::string& json_str)
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+
+DeviceError::DeviceError() :
+    category(OperationResult::OPERATION_OK),
+    asi_code(0),
+    context()
+{}
 
 std::string DeviceError::toString() const
 {

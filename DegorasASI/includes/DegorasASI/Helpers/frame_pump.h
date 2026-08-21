@@ -81,14 +81,15 @@ class DEGORASASI_EXPORT FramePump
 {
 public:
 
-    /// Captures one frame into @p frame and returns the outcome. Expected to BLOCK until a frame arrives or it times out.
+    /// Captures one frame into @p frame and returns the outcome. Expected to BLOCK until a frame arrives or times out.
     using Producer = std::function<types::OperationResult(types::Frame&)>;
 
     /// Receives each capture's outcome and the frame. The frame is a reference into the pump's reusable buffer and is
     /// only valid for the duration of the call: copy what you need before returning.
     using Sink = std::function<void(types::OperationResult, const types::Frame&)>;
 
-    FramePump() = default;
+    /// @brief Establishes an idle pump: no worker, zeroed counters and the library's default join bound.
+    FramePump();
 
     /// @brief Stops the worker (bounded join / detach) before destruction.
     ~FramePump();
@@ -99,6 +100,19 @@ public:
     FramePump& operator=(FramePump&&) = delete;
 
     /**
+     * @brief Start the acquisition worker with the library's default join bound.
+     * @param producer Called in a loop to capture a frame. Must block rather than spin.
+     * @param sink Called after each capture with the (result, frame).
+     * @return OPERATION_OK on success, WORKER_ALREADY_RUNNING if already pumping, WORKER_START_ERROR on failure.
+     *
+     * @note An OVERLOAD, not a defaulted parameter, and the same applies everywhere in this library. A default
+     *       argument is compiled into the CALLER, so revising it later would leave every already-built client running
+     *       the old value until it is recompiled; a value carried by an overload lives in the library and travels with
+     *       the shared object.
+     */
+    types::OperationResult start(Producer producer, Sink sink);
+
+    /**
      * @brief Start the acquisition worker.
      * @param producer Called in a loop to capture a frame. Must block rather than spin.
      * @param sink Called after each capture with the (result, frame).
@@ -106,9 +120,7 @@ public:
      *                     producer's own timeout.
      * @return OPERATION_OK on success, WORKER_ALREADY_RUNNING if already pumping, WORKER_START_ERROR on failure.
      */
-    types::OperationResult start(Producer producer,
-                                 Sink sink,
-                                 std::chrono::milliseconds join_timeout = std::chrono::milliseconds(5000));
+    types::OperationResult start(Producer producer, Sink sink, std::chrono::milliseconds join_timeout);
 
     /**
      * @brief Stop the acquisition worker.
@@ -138,13 +150,16 @@ private:
     /// Shared sync block, kept alive by both the pump and the (possibly detached) worker.
     struct State
     {
+        /// @brief Establishes a block for a run not yet started: not stopping, not done, not running, counters zero.
+        State();
+
         std::mutex m;
         std::condition_variable cv;
-        bool stop = false;
-        bool done = false;
-        std::atomic<bool> running{false};        ///< Observable without the worker-lifecycle lock.
-        std::atomic<std::uint64_t> delivered{0};
-        std::atomic<std::uint64_t> failed{0};
+        bool stop;
+        bool done;
+        std::atomic<bool> running;               ///< Observable without the worker-lifecycle lock.
+        std::atomic<std::uint64_t> delivered;
+        std::atomic<std::uint64_t> failed;
     };
 
     static void run(std::shared_ptr<State> st, Producer producer, Sink sink);
@@ -152,11 +167,11 @@ private:
     /// @brief The current run's state block. Takes only @ref state_ptr_mtx_, so it never contends with stop()'s wait.
     std::shared_ptr<State> currentState() const;
 
-    mutable std::mutex wk_mtx_;                                  ///< Guards worker lifecycle (start/stop/join).
-    mutable std::mutex state_ptr_mtx_;                          ///< Guards ONLY the state_ pointer; never held across a wait.
-    std::thread worker_;                                        ///< The acquisition worker (joinable == running).
-    std::shared_ptr<State> state_ = std::make_shared<State>();  ///< Current run's shared sync block.
-    std::chrono::milliseconds join_timeout_{5000};              ///< Bound on stop()'s join before detaching.
+    mutable std::mutex wk_mtx_;                    ///< Guards worker lifecycle (start/stop/join).
+    mutable std::mutex state_ptr_mtx_;             ///< Guards ONLY the state_ pointer; never held across a wait.
+    std::thread worker_;                           ///< The acquisition worker (joinable == running).
+    std::shared_ptr<State> state_;                 ///< Current run's shared sync block.
+    std::chrono::milliseconds join_timeout_;       ///< Bound on stop()'s join before detaching.
 };
 
 // ---------------------------------------------------------------------------------------------------------------------

@@ -25,9 +25,10 @@
 
 // C++ INCLUDES
 #include <chrono>
-#include <thread>
+#include <functional>
 
 // PROJECT INCLUDES
+#include "DegorasASI/Global/degorasasi_export.h"
 #include "DegorasASI/Common/common_types.h"
 
 
@@ -39,30 +40,23 @@ namespace dpasi
 
 /**
  * @brief Poll a predicate until it becomes true or a timeout elapses.
- * @tparam Pred Callable returning something convertible to bool; true means the condition is met.
- * @param pred The condition to test. Evaluated immediately, then once per @p interval.
+ * @param pred The condition to test. Evaluated immediately, then once per @p interval. True means the condition is met.
  * @param timeout Maximum time to wait for @p pred to become true.
  * @param interval Delay between successive evaluations of @p pred.
  * @return OperationResult::OPERATION_OK if @p pred became true within @p timeout, otherwise
  *         OperationResult::OPERATION_TIMEOUT.
- * @note Generic deadline-poll helper. It uses a steady clock, so it is unaffected by wall-clock adjustments. It does
- *       not throw.
+ * @note Generic deadline-poll helper. It uses a steady clock, so it is unaffected by wall-clock adjustments. It throws
+ *       nothing of its own; whatever @p pred throws propagates to the caller.
+ * @note The predicate is taken as a std::function, not as a deduced callable, so that the body lives in the library
+ *       instead of in this header. Any lambda converts implicitly, and since the predicate runs once per @p interval
+ *       the indirect call is not measurable against the wait itself.
+ * @note @p interval is a required argument rather than a defaulted one: a default argument in a shared library is
+ *       compiled into the CALLER, so correcting it later would need every client recompiled.
  * @note Generic, project-agnostic: candidate to migrate into LibDegorasBase if shared across the Degoras libraries.
  */
-template <class Pred>
-types::OperationResult waitForCondition(Pred pred,
-                                        std::chrono::milliseconds timeout,
-                                        std::chrono::milliseconds interval = std::chrono::milliseconds(50))
-{
-    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + timeout;
-    while (!pred())
-    {
-        if (std::chrono::steady_clock::now() >= deadline)
-            return types::OperationResult::OPERATION_TIMEOUT;
-        std::this_thread::sleep_for(interval);
-    }
-    return types::OperationResult::OPERATION_OK;
-}
+DEGORASASI_EXPORT types::OperationResult waitForCondition(std::function<bool()> pred,
+                                                          std::chrono::milliseconds timeout,
+                                                          std::chrono::milliseconds interval);
 
 // ---------------------------------------------------------------------------------------------------------------------
 

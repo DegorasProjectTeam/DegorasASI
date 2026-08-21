@@ -132,11 +132,21 @@ std::string prettify(const std::string& compact)
     return out;
 }
 
+bool getBool(const std::string& json, const std::string& key)
+{
+    return getBool(json, key, false);
+}
+
 bool getBool(const std::string& json, const std::string& key, bool def)
 {
     const std::size_t s = valueStart(json, key);
     if (s == std::string::npos) return def;
     return scalarToken(json, s) == "true";
+}
+
+int getInt(const std::string& json, const std::string& key)
+{
+    return getInt(json, key, 0);
 }
 
 int getInt(const std::string& json, const std::string& key, int def)
@@ -147,6 +157,11 @@ int getInt(const std::string& json, const std::string& key, int def)
     catch (...) { return def; }
 }
 
+std::int64_t getInt64(const std::string& json, const std::string& key)
+{
+    return getInt64(json, key, 0);
+}
+
 std::int64_t getInt64(const std::string& json, const std::string& key, std::int64_t def)
 {
     const std::size_t s = valueStart(json, key);
@@ -155,12 +170,22 @@ std::int64_t getInt64(const std::string& json, const std::string& key, std::int6
     catch (...) { return def; }
 }
 
+double getDouble(const std::string& json, const std::string& key)
+{
+    return getDouble(json, key, 0.0);
+}
+
 double getDouble(const std::string& json, const std::string& key, double def)
 {
     const std::size_t s = valueStart(json, key);
     if (s == std::string::npos) return def;
     try { return std::stod(scalarToken(json, s)); }
     catch (...) { return def; }
+}
+
+std::string getString(const std::string& json, const std::string& key)
+{
+    return getString(json, key, std::string());
 }
 
 std::string getString(const std::string& json, const std::string& key, const std::string& def)

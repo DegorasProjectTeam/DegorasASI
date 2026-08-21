@@ -46,7 +46,7 @@ namespace json
  * @warning JSON round-trip caveats, by design:
  *  - Floating-point fields are serialised by the types at the default stream precision (~6 significant digits), so
  *    high-precision values are NOT preserved exactly through toJsonStr() -> fromJsonStr(). Adequate for pixel pitches
- *    in micrometres; if exact round-tripping of arbitrary doubles is ever required, raise the precision in the emitters.
+ *    in micrometres; if exact round-tripping of arbitrary doubles is ever needed, raise the precision in the emitters.
  *  - fromJsonStr() is tolerant and best-effort, NOT a validating parser: malformed input or a missing key yields the
  *    field's default rather than an error. It is intended only to read back this library's own toJsonStr() output.
  *
@@ -58,20 +58,42 @@ namespace json
 /// @brief Re-indent a compact JSON string into a human-readable (pretty) multi-line form.
 std::string prettify(const std::string& compact);
 
+// Each extractor comes in two OVERLOADS -- one taking the fallback, one carrying the type's zero-equivalent --
+// rather than one function with a defaulted parameter. A default argument is compiled into the CALLER, so revising it
+// later would leave every already-built client using the old value until it is recompiled, whereas an overload keeps
+// the value inside the library.
+//
+// Plain comment rather than doxygen on purpose: an unattached /** */ block is bound by doxygen to the next entity.
+
+/// @brief Read a boolean value by key (true if the token is "true"); false if the key is absent.
+bool getBool(const std::string& json, const std::string& key);
+
 /// @brief Read a boolean value by key (true if the token is "true").
-bool getBool(const std::string& json, const std::string& key, bool def = false);
+bool getBool(const std::string& json, const std::string& key, bool def);
+
+/// @brief Read an integer value by key; zero if the key is absent or unparsable.
+int getInt(const std::string& json, const std::string& key);
 
 /// @brief Read an integer value by key.
-int getInt(const std::string& json, const std::string& key, int def = 0);
+int getInt(const std::string& json, const std::string& key, int def);
+
+/// @brief Read a 64-bit integer value by key; zero if the key is absent or unparsable.
+std::int64_t getInt64(const std::string& json, const std::string& key);
 
 /// @brief Read a 64-bit integer value by key (control values are widened to 64 bits at the public boundary).
-std::int64_t getInt64(const std::string& json, const std::string& key, std::int64_t def = 0);
+std::int64_t getInt64(const std::string& json, const std::string& key, std::int64_t def);
+
+/// @brief Read a floating-point value by key; zero if the key is absent or unparsable.
+double getDouble(const std::string& json, const std::string& key);
 
 /// @brief Read a floating-point value by key.
-double getDouble(const std::string& json, const std::string& key, double def = 0.0);
+double getDouble(const std::string& json, const std::string& key, double def);
+
+/// @brief Read a (quoted) string value by key; empty if the key is absent or is not a string.
+std::string getString(const std::string& json, const std::string& key);
 
 /// @brief Read a (quoted) string value by key.
-std::string getString(const std::string& json, const std::string& key, const std::string& def = std::string());
+std::string getString(const std::string& json, const std::string& key, const std::string& def);
 
 /// @brief Read a nested object value by key, returned as its raw "{ ... }" substring (empty if absent).
 std::string getObject(const std::string& json, const std::string& key);
