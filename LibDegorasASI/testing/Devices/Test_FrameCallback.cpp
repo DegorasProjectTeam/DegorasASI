@@ -54,6 +54,9 @@
 #include <LibDegorasASI/Modules/ASI>
 #include <LibDegorasASI/Modules/Devices>
 
+// TESTING INCLUDES
+#include <dpasi_test_camera.h>
+
 
 using namespace dpasi;
 using namespace dpasi::types;
@@ -404,17 +407,9 @@ int main(int argc, char* argv[])
 {
     std::cout << "Test_FrameCallback (ZWO ASI SDK " << asi::getSdkVersion() << ")\n";
 
-    CameraDescriptorList cameras;
-    if (AsiCamera::getDeviceList(kModel, cameras) != OperationResult::OPERATION_OK || cameras.empty())
-    {
-        std::cout << "SKIPPED: no " << kModel << " attached." << std::endl;
-        return 0;
-    }
-
-    CameraId id = cameras.front().id;
-    if (argc > 1)
-        id = static_cast<CameraId>(std::atoi(argv[1]));
-    std::cout << "Using camera id " << toType(id) << "\n";
+    // The gate lives in ../dpasi_test_camera.h. This block used to print SKIPPED and return 0 when no
+    // camera was attached, and exit status 0 is what CTest reads as PASSED. See that header for the two modes.
+    const CameraId id = dpasi_test::requireCamera("Test_FrameCallback", kModel, argc, argv);
 
     {
         AsiCamera camera(id);

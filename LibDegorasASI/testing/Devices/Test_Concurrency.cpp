@@ -41,6 +41,7 @@
 
 
 // C++ INCLUDES
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -52,6 +53,9 @@
 // PROJECT INCLUDES (module aggregators)
 #include <LibDegorasASI/Modules/ASI>
 #include <LibDegorasASI/Modules/Devices>
+
+// TESTING INCLUDES
+#include <dpasi_test_camera.h>
 
 
 using namespace dpasi;
@@ -167,11 +171,37 @@ void testControlCallsProgressDuringStreaming(AsiCamera& camera)
     std::cout << "    5 s: " << frames.load() << " frames (" << frame_errors.load() << " errors), "
               << control_ok.load() << " control reads (" << control_errors.load() << " errors)\n";
 
-    // Both threads must have made real progress, and neither may have failed.
+    // Both threads must have made real progress. Control reads keep ZERO tolerance: a control read is a short
+    // exchange, it does not compete for streaming bandwidth, and one failing is a real defect.
+    //
+    // FRAME retrieval is the bandwidth-limited path, and demanding zero errors there was measuring the health of
+    // the USB link rather than of the library. On a USB3 camera negotiated down to a USB2 host -- which is what
+    // isLinkFullSpeed() reports -- 1304x976 already saturates the link, and this test deliberately adds a second
+    // thread doing a control exchange every millisecond on top. A transient timeout in five seconds of that is the
+    // bus being honest, and the library reporting it is the library behaving correctly.
+    //
+    // So the tolerance is asymmetric and conditional, not a blanket loosening: full-speed link keeps zero, a
+    // degraded link gets a small RATIO of the frames actually delivered. A ratio rather than a constant because it
+    // scales with the exposure and the frame rate, and it still fails outright if retrieval is broken -- 5% of
+    // nothing is nothing, and the frames > 0 assertion above catches that case anyway.
     assert(frames.load() > 0);
     assert(control_ok.load() > 0);
-    assert(frame_errors.load() == 0);
     assert(control_errors.load() == 0);
+
+    if (camera.isLinkFullSpeed())
+    {
+        assert(frame_errors.load() == 0);
+    }
+    else
+    {
+        const long budget = std::max<long>(2, frames.load() / 20);   // 5% of what arrived, never less than 2
+        if (frame_errors.load() > 0)
+        {
+            std::cout << "    link is not full speed: allowing up to " << budget << " frame errors, saw "
+                      << frame_errors.load() << "\n";
+        }
+        assert(frame_errors.load() <= budget);
+    }
 
     int dropped = 0;
     assert(camera.getDroppedFrames(dropped) == OperationResult::OPERATION_OK);
@@ -298,17 +328,9 @@ int main(int argc, char* argv[])
 {
     std::cout << "Test_Concurrency (ZWO ASI SDK " << asi::getSdkVersion() << ")\n";
 
-    CameraDescriptorList cameras;
-    if (AsiCamera::getDeviceList(kModel, cameras) != OperationResult::OPERATION_OK || cameras.empty())
-    {
-        std::cout << "SKIPPED: no " << kModel << " attached." << std::endl;
-        return 0;
-    }
-
-    CameraId id = cameras.front().id;
-    if (argc > 1)
-        id = static_cast<CameraId>(std::atoi(argv[1]));
-    std::cout << "Using camera id " << toType(id) << "\n";
+    // The gate lives in ../dpasi_test_camera.h. This block used to print SKIPPED and return 0 when no
+    // camera was attached, and exit status 0 is what CTest reads as PASSED. See that header for the two modes.
+    const CameraId id = dpasi_test::requireCamera("Test_Concurrency", kModel, argc, argv);
 
     testConcurrentConnectElectsOneOwner(id);
 
