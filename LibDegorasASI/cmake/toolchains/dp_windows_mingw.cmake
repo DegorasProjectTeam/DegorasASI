@@ -3,13 +3,17 @@
 # Requires environment variable:
 #   MINGW_ROOT  -> the MSYS2 prefix. The DegorasSLR environment exports it (${MSYS2_ROOT}/${MSYS2_ENV});
 #                  elsewhere set it yourself to a ucrt64, mingw64 or clang64 prefix.
+# Honoured when present:
+#   VCPKG_ROOT + VCPKG_DEFAULT_TRIPLET -> the package prefix is searched AHEAD of the MinGW one. See below.
 #
 # This is the project's REFERENCE (validated) Windows toolchain, not a requirement: LibDegorasASI itself imposes no
 # platform or toolchain lock, because the ZWO ASI Camera SDK is shipped for Windows, Linux, macOS and Android.
 #
 
-set(CMAKE_SYSTEM_NAME Windows)
-set(CMAKE_SYSTEM_PROCESSOR x86_64)
+# CMAKE_SYSTEM_NAME is deliberately NOT set. MinGW-on-Windows is a NATIVE build, and declaring the system name turns
+# CMAKE_CROSSCOMPILING on regardless, which changes how other packages behave -- Qt, for one, then looks only for the
+# .bat tool wrappers a real cross-build would ship and never for the .exe that is actually installed. Leaving it unset
+# also lets CMake detect CMAKE_SYSTEM_PROCESSOR by itself, which it gets right (x86_64).
 
 if(NOT DEFINED ENV{MINGW_ROOT} OR "$ENV{MINGW_ROOT}" STREQUAL "")
     message(FATAL_ERROR "[CMAKE] dp_windows_mingw.cmake: MINGW_ROOT is not set. It names the MSYS2 prefix "
@@ -32,8 +36,40 @@ if(EXISTS "${_PFX}/bin/ninja.exe")
     set(CMAKE_MAKE_PROGRAM "${_PFX}/bin/ninja.exe" CACHE FILEPATH "Ninja from MSYS2 prefix" FORCE)
 endif()
 
-# Prefer config packages, and ensure the prefix is searched first.
 set(CMAKE_FIND_PACKAGE_PREFER_CONFIG ON CACHE BOOL "" FORCE)
-list(PREPEND CMAKE_PREFIX_PATH "${_PFX}")
+
+# ----------------------------------------------------------------------------------------------------------------------
+# SEARCH ORDER: PACKAGES BEFORE THE COMPILER PREFIX
+#
+# This file used to do `list(PREPEND CMAKE_PREFIX_PATH "${_PFX}")`, which put the MinGW prefix ahead of everything.
+# That was wrong, and it broke find_package(OpenCV) outright. The MinGW prefix supplies the COMPILER; the packages
+# this project consumes come from vcpkg, and when a package exists in both prefixes the two are NOT interchangeable.
+#
+# The failure it caused, measured rather than guessed: MSYS2 ships a Qt6 (Qt Creator pulls it in) that provides every
+# component OpenCV asks for EXCEPT Core5Compat. vcpkg's OpenCV runs find_dependency(Qt6 COMPONENTS ... Core5Compat)
+# from inside OpenCVModules.cmake because its highgui is built against Qt. With the MinGW prefix searched first, that
+# resolved to MSYS2's Qt6, failed on the missing component, and -- because the failure lands inside OpenCV's own
+# cmake_policy(PUSH) block -- surfaced as the thoroughly misleading:
+#
+#     CMake Error in .../OpenCVModules.cmake: cmake_policy PUSH without matching POP
+#
+# Note that CMAKE_PREFIX_PATH is searched BEFORE the prefixes CMake derives from PATH entries ending in /bin, which is
+# how the vcpkg prefix was being found at all. Merely appending the MinGW prefix instead of prepending it therefore
+# fixes nothing: the vcpkg prefix has to be named here, explicitly, and first.
+if(DEFINED ENV{VCPKG_ROOT} AND DEFINED ENV{VCPKG_DEFAULT_TRIPLET}
+   AND NOT "$ENV{VCPKG_ROOT}" STREQUAL "" AND NOT "$ENV{VCPKG_DEFAULT_TRIPLET}" STREQUAL "")
+    set(_VCPKG_PFX "$ENV{VCPKG_ROOT}/installed/$ENV{VCPKG_DEFAULT_TRIPLET}")
+    if(IS_DIRECTORY "${_VCPKG_PFX}")
+        list(APPEND CMAKE_PREFIX_PATH "${_VCPKG_PFX}")
+    endif()
+    unset(_VCPKG_PFX)
+endif()
+
+# The compiler prefix last, as a fallback for anything vcpkg does not carry.
+list(APPEND CMAKE_PREFIX_PATH "${_PFX}")
+
+# The toolchain file is re-read for every try_compile, and CMAKE_PREFIX_PATH is inherited into those, so without this
+# the list grows a duplicate of each entry per pass. Cosmetic, but it makes the configure output unreadable.
+list(REMOVE_DUPLICATES CMAKE_PREFIX_PATH)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL "" FORCE)
