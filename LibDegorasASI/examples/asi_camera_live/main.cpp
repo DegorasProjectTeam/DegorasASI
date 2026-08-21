@@ -53,8 +53,10 @@
 
 // C++ INCLUDES
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <csignal>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
@@ -80,6 +82,24 @@ using dpasi::types::OperationResult;
 
 namespace
 {
+
+// A HARD KILL CAN LEAVE THE CAMERA UNUSABLE, so this example goes out of its way to avoid one.
+//
+// Measured the hard way: after repeatedly killing processes that held the camera open, the ASI SDK began reporting
+// zero connected cameras while Windows still reported the device present and healthy (Status OK, CM_PROB_NONE).
+// Nothing held it and no lock file remained -- the wedge is inside the vendor driver, invisible to PnP, and it took
+// a physical re-plug to clear. So Ctrl-C and a terminating signal are caught and turned into a normal exit through
+// the loop below, which stops the stream and disconnects properly.
+//
+// The handler does nothing but set a flag, because that is all a signal handler may safely do. It cannot help with
+// SIGKILL, a taskkill /f or a debugger detaching -- nothing can -- which is exactly why the message at the end of
+// main() says so.
+std::atomic<bool> g_stop{false};
+
+extern "C" void onSignal(int)
+{
+    g_stop.store(true);
+}
 
 constexpr int  kMaxWindowWidth  = 1280;
 constexpr int  kMaxWindowHeight = 960;
@@ -583,6 +603,10 @@ bool parseArgs(int argc, char** argv, Options& opt)
 
 int main(int argc, char** argv)
 {
+    // Installed before anything opens the camera, so an interrupt during startup is handled too.
+    std::signal(SIGINT, onSignal);
+    std::signal(SIGTERM, onSignal);
+
     Options opt;
     if (!parseArgs(argc, argv, opt))
         return 1;
@@ -741,7 +765,7 @@ int main(int argc, char** argv)
     auto last_poll   = last_report;
     int  frames_since_report = 0;
 
-    while (running)
+    while (running && !g_stop.load())
     {
         // -- Frame ---------------------------------------------------------------------------------------------------
         const OperationResult res = camera.doGetVideoFrame(frame, std::chrono::milliseconds(2000));
@@ -976,6 +1000,8 @@ int main(int argc, char** argv)
         cv::waitKey(1);   // lets highgui actually tear the window down before the process exits
     }
 
+    if (g_stop.load())
+        std::cout << "\n(interrupted; the stream was stopped and the camera released cleanly)\n";
     std::cout << "\nstopped after sequence " << frame.sequence << "\n";
     return 0;
 }
