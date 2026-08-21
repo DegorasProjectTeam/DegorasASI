@@ -8,7 +8,7 @@
 
 <!-- PROJECT TITLE -->
 <div align="center">
-  <h1 align="center">LibDegorasASI</h1>
+  <h1 align="center">DegorasASI</h1>
 
   <p align="center">
     An extensible C++17 library for controlling ZWO ASI astronomy cameras.
@@ -18,9 +18,9 @@
     <br />
     <a href="#usage">View Usage</a>
     &middot;
-    <a href="https://github.com/DegorasProjectTeam/LibDegorasASI/issues">Report Bug</a>
+    <a href="https://github.com/DegorasProjectTeam/DegorasASI/issues">Report Bug</a>
     &middot;
-    <a href="https://github.com/DegorasProjectTeam/LibDegorasASI/issues">Request Feature</a>
+    <a href="https://github.com/DegorasProjectTeam/DegorasASI/issues">Request Feature</a>
   </p>
 </div>
 
@@ -55,7 +55,7 @@
 <!-- ABOUT THE PROJECT -->
 ## About The Project
 
-LibDegorasASI is a production-quality, extensible C++17 library that wraps the official ZWO ASI Camera SDK (a C API)
+DegorasASI is a production-quality, extensible C++17 library that wraps the official ZWO ASI Camera SDK (a C API)
 in a modern, strongly-typed C++ interface. It is built so that additional ASI camera models join without
 architectural changes.
 
@@ -79,8 +79,8 @@ against the vendor's.
 | 3 — camera driver | `Devices/` | nothing model-specific | `AsiCamera`, one class for every ASI model |
 
 Within Layer 1: `Global/` holds the export macro, `Common/` the camera vocabulary and result/error model, and
-`Helpers/` the generic infrastructure. Headers are consumed individually as `#include "LibDegorasASI/<Folder>/<file>.h"`,
-or a whole group via a module aggregator: `#include <LibDegorasASI/Modules/Devices>` (also `Common`, `Helpers`, `ASI`).
+`Helpers/` the generic infrastructure. Headers are consumed individually as `#include "DegorasASI/<Folder>/<file>.h"`,
+or a whole group via a module aggregator: `#include <DegorasASI/Modules/Devices>` (also `Common`, `Helpers`, `ASI`).
 
 > **On one class for every model.** The reference sibling project has a class per device, and this library
 > deliberately does not. Its vendor SDK exposes a **different C API per module** (`BDC_*` versus `ISC_*`) and its
@@ -119,27 +119,27 @@ or a whole group via a module aggregator: `#include <LibDegorasASI/Modules/Devic
 
 ### Build
 
-The CMake project root is the inner `LibDegorasASI/` directory. Configure and build with a preset:
+The CMake project root is the inner `DegorasASI/` directory. Configure and build with a preset:
 
 ```sh
-cd LibDegorasASI
+cd DegorasASI
 cmake --preset mingw-dynamic-deb
 cmake --build --preset mingw-dynamic-deb
 ```
 
 Project presets in `CMakePresets.json` cover `mingw-{dynamic,static}-{deb,rel}` plus `unix-dynamic-{deb,rel}` for a
-non-Windows host. Build options: `LIBDEGORASASI_BUILD_SHARED` (default ON), `LIBDEGORASASI_BUILD_TESTING`,
-`LIBDEGORASASI_BUILD_EXAMPLES`.
+non-Windows host. Build options: `DEGORASASI_BUILD_SHARED` (default ON), `DEGORASASI_BUILD_TESTING`,
+`DEGORASASI_BUILD_EXAMPLES`.
 
-Nothing is built inside the repository. Each preset builds in `$DEVSYSTEM_BUILDTREES/LibDegorasASI/<preset>/`
-and installs to `$DEVSYSTEM_DEPLOYS/LibDegorasASI/<preset>/`, so `cmake --install` needs no `--prefix`. The
+Nothing is built inside the repository. Each preset builds in `$DEVSYSTEM_BUILDTREES/DegorasASI/<preset>/`
+and installs to `$DEVSYSTEM_DEPLOYS/DegorasASI/<preset>/`, so `cmake --install` needs no `--prefix`. The
 deploy prefix is per preset because the library defines no debug postfix: a Debug and a Release install sharing
-one prefix would overwrite each other's `LibDegorasASI.dll` and export files.
+one prefix would overwrite each other's `DegorasASI.dll` and export files.
 
 The presets are gated on those three variables. Without them CMake reports the preset as disabled rather than
 writing the build somewhere unexpected — which is why `cmake --list-presets` is empty outside the environment.
 
-Binaries land in `$DEVSYSTEM_BUILDTREES/LibDegorasASI/<preset>/bin/`. The build stages, next to them, both the
+Binaries land in `$DEVSYSTEM_BUILDTREES/DegorasASI/<preset>/bin/`. The build stages, next to them, both the
 vendored ZWO runtime and the MinGW C++ runtime (`libstdc++-6.dll`, `libgcc_s_seh-1.dll`, `libwinpthread-1.dll`), so
 the executables run without the toolchain on `PATH`.
 
@@ -149,7 +149,7 @@ the executables run without the toolchain on `PATH`.
 ## Usage
 
 ```cpp
-#include <LibDegorasASI/Modules/Devices>   // AsiCamera, Frame, CameraStatus
+#include <DegorasASI/Modules/Devices>   // AsiCamera, Frame, CameraStatus
 
 using namespace dpasi;
 using dpasi::types::OperationResult;
@@ -391,9 +391,9 @@ measured against a real ASI224MC, and each is why a particular piece of the desi
 ## Testing
 
 There is no test-framework dependency: the `testing/` executables are plain `assert()`-based checks, named `UT_*` for
-hardware-free unit tests and `Test_*` for integration tests (build with `LIBDEGORASASI_BUILD_TESTING=ON`). The
-`examples/` demos (`Example_*`) build with `LIBDEGORASASI_BUILD_EXAMPLES=ON`; each is a self-contained subproject
-(`<name>/CMakeLists.txt` + `main.cpp`). Everything runs from `$DEVSYSTEM_BUILDTREES/LibDegorasASI/<preset>/bin/`.
+hardware-free unit tests and `Test_*` for integration tests (build with `DEGORASASI_BUILD_TESTING=ON`). The
+`examples/` demos (`Example_*`) build with `DEGORASASI_BUILD_EXAMPLES=ON`; each is a self-contained subproject
+(`<name>/CMakeLists.txt` + `main.cpp`). Everything runs from `$DEVSYSTEM_BUILDTREES/DegorasASI/<preset>/bin/`.
 
 * `UT_ImageGeometry` — the safety-critical buffer arithmetic, ROI alignment rules, and the validated numeric adapters.
 * `UT_Json` — JSON round-trip for every serialisable value type, compact and pretty.
@@ -428,7 +428,7 @@ hardware-free unit tests and `Test_*` for integration tests (build with `LIBDEGO
 <!-- ROADMAP -->
 ## Roadmap
 
-- [x] Install/export + CMake package config (`find_package(DegorasASI)` → `Degoras::ASI`) and a vcpkg overlay port. See [`docs/PACKAGING.md`](LibDegorasASI/docs/PACKAGING.md).
+- [x] Install/export + CMake package config (`find_package(DegorasASI)` → `Degoras::ASI`) and a vcpkg overlay port. See [`docs/PACKAGING.md`](DegorasASI/docs/PACKAGING.md).
 - [x] One generic `AsiCamera` covering every ASI model, validated on the ASI224MC.
 - [ ] Validate further models against hardware (ASI2600MM next). No library code is needed — only tests.
 - [ ] Cooled-camera support (the cooler controls are already in the vocabulary; no cooled camera has been validated).

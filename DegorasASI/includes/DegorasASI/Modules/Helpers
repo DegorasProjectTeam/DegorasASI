@@ -1,0 +1,35 @@
+/*
+ *  DegorasASI - An extensible C++ library for controlling ZWO ASI astronomy cameras.
+ *
+ *  Developed as free software by and for the Spanish Navy Observatory SLR station (SFEL) in San Fernando.
+ *
+ *  Copyright (C) 2024-2026 Degoras Project Team
+ *                          < Ángel Vera Herrera, avera@roa.es - angelvh.engr@gmail.com >
+ *                          < Jesús Relinque Madroñal, jrelinque@roa.es >
+ *
+ *  This program is free software: you can redistribute it and/or modify it under the terms of the GNU General
+ *  Public License as published by the Free Software Foundation, either version 3 of the License, or (at your
+ *  option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the
+ *  implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+ *  for more details.
+ *
+ *  You should have received a copy of the GNU General Public License along with this program. If not, see
+ *  <https://www.gnu.org/licenses/>.
+ *
+ *  SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+// =====================================================================================================================
+// MODULE: Helpers
+// Generic, project-agnostic infrastructure: the background StatusPoller<StatusT> telemetry worker, the FramePump
+// acquisition worker, the waitForCondition deadline
+// poll helper, and the internal JSON round-trip helpers. Include with: #include <DegorasASI/Modules/Helpers>
+// =====================================================================================================================
+
+#include <DegorasASI/Helpers/frame_pump.h>
+#include <DegorasASI/Helpers/status_poller.h>
+#include <DegorasASI/Helpers/frame_writer.h>
+#include <DegorasASI/Helpers/wait_for.h>
+#include <DegorasASI/Helpers/json_utils.h>

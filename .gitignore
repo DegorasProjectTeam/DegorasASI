@@ -27,6 +27,6 @@ Thumbs.db
 
 # Vendor reference material, kept at the repository root for consultation but NOT tracked: the ZWO SDK's own demo
 # application (19 MB, and it bundles OpenCV binaries this library deliberately does not depend on) and its PDF
-# documentation. Only the SDK BUILD PAYLOAD lives under LibDegorasASI/thirdparty/ASI/ and is tracked, mirroring how the
+# documentation. Only the SDK BUILD PAYLOAD lives under DegorasASI/thirdparty/ASI/ and is tracked, mirroring how the
 # reference project vendors thirdparty/Thorlabs/. Re-populate this directory from the official SDK download if needed.
 reference/

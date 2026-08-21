@@ -1,0 +1,12 @@
+{
+  "name": "degoras-asi",
+  "version": "0.0.1",
+  "description": "Extensible C++17 library for controlling ZWO ASI astronomy cameras (ASI224MC).",
+  "homepage": "https://github.com/DegorasProjectTeam/DegorasASI",
+  "license": "GPL-3.0-or-later",
+  "supports": "windows & x64",
+  "dependencies": [
+    { "name": "vcpkg-cmake", "host": true },
+    { "name": "vcpkg-cmake-config", "host": true }
+  ]
+}

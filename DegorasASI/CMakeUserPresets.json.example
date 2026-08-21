@@ -1,0 +1,57 @@
+{
+  "version": 6,
+  "vendor": {
+    "org.degoras.readme": {
+      "what": [
+        "PERSONAL presets. Copy to CMakeUserPresets.json (gitignored) and edit freely -- nothing here is tracked,",
+        "so it can never break anyone else's machine.",
+        "",
+        "The prose lives under 'vendor' because CMake rejects any unrecognised field in the root object, and",
+        "JSON has no comments. CMake ignores 'vendor' by design, so this is the one place it can go."
+      ],
+      "when": [
+        "You do NOT need this file inside the DegorasSLR environment. The launcher exports MINGW_ROOT,",
+        "DEVSYSTEM_BUILDTREES and DEVSYSTEM_DEPLOYS, which is all the generic mingw-* and unix-* presets read:",
+        "builds go to $DEVSYSTEM_BUILDTREES/DegorasASI/<preset> and installs to",
+        "$DEVSYSTEM_DEPLOYS/DegorasASI/<preset>.",
+        "",
+        "It is for building OUTSIDE that environment. The generic presets are gated on those three variables, so",
+        "without them CMake reports the preset as disabled -- and 'cmake --list-presets' comes back empty --",
+        "rather than quietly writing the build somewhere unexpected. Either export the variables yourself, or",
+        "override them here as the two examples below do."
+      ]
+    }
+  },
+  "configurePresets": [
+    {
+      "name": "my-mingw-dynamic-deb",
+      "displayName": "My machine -- MinGW Shared Debug",
+      "inherits": "mingw-dynamic-deb",
+      "environment": {
+        "MINGW_ROOT": "C:/msys64/ucrt64",
+        "DEVSYSTEM_BUILDTREES": "C:/dev/buildtrees",
+        "DEVSYSTEM_DEPLOYS": "C:/dev/deploys"
+      }
+    },
+    {
+      "name": "my-tree-local",
+      "displayName": "My machine -- build and install beside the sources",
+      "inherits": "mingw-dynamic-deb",
+      "binaryDir": "${sourceDir}/../build/${presetName}",
+      "installDir": "${sourceDir}/../build/${presetName}/install",
+      "environment": {
+        "MINGW_ROOT": "C:/msys64/ucrt64",
+        "DEVSYSTEM_BUILDTREES": "unused-here-but-must-be-non-empty-to-pass-the-gate",
+        "DEVSYSTEM_DEPLOYS": "unused-here-but-must-be-non-empty-to-pass-the-gate"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "my-mingw-dynamic-deb", "configurePreset": "my-mingw-dynamic-deb" },
+    { "name": "my-tree-local",        "configurePreset": "my-tree-local" }
+  ],
+  "testPresets": [
+    { "name": "my-mingw-dynamic-deb", "configurePreset": "my-mingw-dynamic-deb",
+      "output": { "outputOnFailure": true } }
+  ]
+}
