@@ -50,16 +50,32 @@ namespace asi
 //     ASIOpenCamera(0)              = ASI_SUCCESS      <-- no exclusivity whatsoever
 //     ASIInitCamera(0)              = ASI_SUCCESS
 //
-// Both processes then fight, and the symptoms are non-deterministic rather than an error: enumeration returned ZERO
-// cameras on four of six attempts, single-frame captures alternated between success and ASI_EXP_FAILED, and a test
-// suite failed at a different assertion on every run. So the SDK cannot be asked whether a camera is busy -- the
-// answer has to come from us.
+// Both processes then fight, and the symptom is non-deterministic rather than an error: with a second process
+// connected, single-frame captures alternated between success and ASI_EXP_FAILED on an otherwise trivial 320x240
+// 10 ms exposure. So the SDK cannot be asked whether a camera is busy -- the answer has to come from us.
+//
+// AND ENUMERATION IS NOT THE ANSWER EITHER, which was worth establishing because it looks like it should be. On a
+// healthy camera with another process holding it, ASIGetNumOfConnectedCameras() returned 1 on 40 of 40 samples with
+// the holder merely connected, and 40 of 40 again with the holder actively streaming. It never once reported the
+// camera missing. An earlier measurement that appeared to show otherwise was an artefact: repeatedly killing
+// camera-holding processes wedges the vendor driver, and in THAT state enumeration returns zero (and eventually
+// blocks outright) whether or not anybody holds the camera. Same symptom, different cause, and not usable as a
+// signal for either.
 //
 // WHAT THIS DOES AND DOES NOT COVER. It is an advisory lock between processes that use THIS LIBRARY. That is the
 // realistic case: the station's own viewer, examples and test suite competing with each other. It cannot see a
-// third-party application such as ASIStudio, and nothing can: the only observable signal from outside is that the
-// program has ASICamera2.dll loaded, and that was measured to be a false positive -- ASIStudio sitting open with its
-// capture window closed holds no camera at all.
+// third-party application such as ASIStudio, and as far as could be established nothing can. Four routes were tried
+// and all four are dead ends:
+//
+//   * The SDK, as above: it reports success and gives no exclusivity.
+//   * Enumeration counts, as above: unaffected by a holder, 40 of 40 either way.
+//   * Which process has ASICamera2.dll loaded. A false-positive machine: ASIStudio sitting open with its capture
+//     window closed has the DLL loaded and holds no camera at all.
+//   * An exclusive CreateFile on the device object. The ZWO driver registers two interface classes for the camera
+//     (the generic USB one and its own), and an exclusive open SUCCEEDS on both while another process is streaming,
+//     so it permits multiple handles by design. Detecting an existing handle would mean enumerating every handle on
+//     the system through undocumented NT calls, and even then the object resolves to the generic USB PDO, which does
+//     not distinguish the SDK's handle from any other.
 //
 // TWO PROPERTIES WORTH KNOWING, both deliberate.
 //
