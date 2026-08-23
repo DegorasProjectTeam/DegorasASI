@@ -70,6 +70,12 @@ struct SliderState
     bool press_pending = false;  ///< A press not yet consumed by the controller.
     int press_x = -1;
     int press_y = -1;
+    int wheel_steps = 0;         ///< Accumulated wheel notches not yet consumed.
+    bool right_held = false;     ///< True while the right button is down, which is how panning is driven.
+    int right_last_x = -1;       ///< Where the right-drag was last read, for the delta.
+    int right_last_y = -1;
+    int right_dx = 0;            ///< Accumulated right-drag movement not yet consumed.
+    int right_dy = 0;
     long long exposure_min = 1;
     long long exposure_max = 1;
 };
@@ -95,6 +101,11 @@ int toFixed(double value)
 {
     return static_cast<int>(std::lround(value * (1 << kSubPixelShift)));
 }
+
+/// How far the digital zoom is allowed to go. Past about this a photosite is a large flat square and there is nothing
+/// more to see; below one the frame would be smaller than the canvas, which is what the window scaling already does.
+constexpr double kMinZoom = 1.0;
+constexpr double kMaxZoom = 32.0;
 
 double millisSinceRender(const std::chrono::steady_clock::time_point& then)
 {
@@ -137,7 +148,7 @@ void onGainSlider(int pos, void*)
     s.gain_moved = true;
 }
 
-void onMouse(int event, int x, int y, int, void*)
+void onMouse(int event, int x, int y, int flags, void*)
 {
     SliderState& s = sliders();
 
@@ -156,6 +167,31 @@ void onMouse(int event, int x, int y, int, void*)
     else if (event == cv::EVENT_LBUTTONUP)
     {
         s.button_held = false;
+    }
+    else if (event == cv::EVENT_RBUTTONDOWN)
+    {
+        s.right_held = true;
+        s.right_last_x = x;
+        s.right_last_y = y;
+    }
+    else if (event == cv::EVENT_RBUTTONUP)
+    {
+        s.right_held = false;
+    }
+    else if (event == cv::EVENT_MOUSEWHEEL)
+    {
+        // The delta is packed into the flags rather than passed as a parameter, and it arrives in notches of 120.
+        // Whether it arrives at all depends on the highgui backend, which is why the keyboard also zooms.
+        const int delta = cv::getMouseWheelDelta(flags);
+        s.wheel_steps += (delta > 0) ? 1 : ((delta < 0) ? -1 : 0);
+    }
+
+    if (s.right_held && event == cv::EVENT_MOUSEMOVE)
+    {
+        s.right_dx += x - s.right_last_x;
+        s.right_dy += y - s.right_last_y;
+        s.right_last_x = x;
+        s.right_last_y = y;
     }
 }
 
@@ -194,6 +230,10 @@ LiveView::LiveView(const std::string& title, int frame_width, int frame_height) 
     show_reticles_(true),
     reticles_(),
     canvas_(),
+    zoom_(1.0),
+    centre_x_(frame_width / 2.0),
+    centre_y_(frame_height / 2.0),
+    geometry_(),
     last_render_(std::chrono::steady_clock::now()),
     last_drawn_sequence_(0)
 {
@@ -295,20 +335,38 @@ void LiveView::syncSliders(const ModelState& state)
 
 // ---------------------------------------------------------------------------------------------------------------------
 
-const cv::Mat& LiveView::compose(const cv::Mat& image, const ModelState& state, const Overlay& overlay)
+const cv::Mat& LiveView::compose(const cv::Mat& image, const ModelState& state, const Overlay& overlay,
+                                const FrameGeometry& geometry)
 {
+    this->geometry_ = geometry;
+    this->clampView();
+
+    // The canvas is always frame-sized, whatever the zoom. So the visible CROP is enlarged into it and the overlay is
+    // then drawn at canvas resolution, which keeps a reticle one pixel wide at any magnification -- draw first and
+    // enlarge afterwards and a 32x zoom would give it a 32-pixel line.
+    this->canvas_.create(this->frame_height_, this->frame_width_, CV_8UC3);
+
     if (image.empty())
     {
         // Before the first frame there is nothing to show, but the window must still exist and the progress bar must
-        // still move, so a black canvas of the right size stands in.
-        this->canvas_.create(this->frame_height_, this->frame_width_, CV_8UC3);
+        // still move, so a flat canvas stands in.
         this->canvas_.setTo(cv::Scalar(20, 20, 20));
     }
     else
     {
-        // Copied, not drawn on: the caller keeps showing the same image while no new frame arrives, and drawing the
-        // overlay onto it would accumulate a new HUD on top of the old one every iteration.
-        image.copyTo(this->canvas_);
+        const cv::Rect visible = this->visibleRegion();
+        if (visible.width == image.cols && visible.height == image.rows)
+        {
+            // Copied, not drawn on: the caller keeps showing the same image while no new frame arrives, and drawing
+            // the overlay onto it would accumulate a new HUD on top of the old one every iteration.
+            image.copyTo(this->canvas_);
+        }
+        else
+        {
+            // INTER_NEAREST on purpose. Magnifying a star field with a smooth filter invents structure that is not in
+            // the data; a hard square per photosite is what somebody judging focus needs to see.
+            cv::resize(image(visible), this->canvas_, this->canvas_.size(), 0.0, 0.0, cv::INTER_NEAREST);
+        }
     }
 
     if (this->show_hud_)
@@ -321,7 +379,8 @@ const cv::Mat& LiveView::compose(const cv::Mat& image, const ModelState& state, 
     return this->canvas_;
 }
 
-void LiveView::render(const cv::Mat& image, const ModelState& state, const Overlay& overlay)
+void LiveView::render(const cv::Mat& image, const ModelState& state, const Overlay& overlay,
+                     const FrameGeometry& geometry)
 {
     if (!this->open_)
         return;
@@ -337,7 +396,7 @@ void LiveView::render(const cv::Mat& image, const ModelState& state, const Overl
     this->last_render_ = std::chrono::steady_clock::now();
     this->last_drawn_sequence_ = state.sequence;
 
-    cv::imshow(this->title_, this->compose(image, state, overlay));
+    cv::imshow(this->title_, this->compose(image, state, overlay, geometry));
 }
 
 int LiveView::frameWidth() const
@@ -397,6 +456,89 @@ bool LiveView::probePointInFrame(int& x, int& y) const
     return this->windowToFrame(s.mouse_x, s.mouse_y, x, y);
 }
 
+cv::Rect LiveView::visibleRegion() const
+{
+    const int w = std::max(1, static_cast<int>(std::lround(this->frame_width_ / this->zoom_)));
+    const int h = std::max(1, static_cast<int>(std::lround(this->frame_height_ / this->zoom_)));
+    int x = static_cast<int>(std::lround(this->centre_x_ - w / 2.0));
+    int y = static_cast<int>(std::lround(this->centre_y_ - h / 2.0));
+    x = std::clamp(x, 0, std::max(0, this->frame_width_ - w));
+    y = std::clamp(y, 0, std::max(0, this->frame_height_ - h));
+    return cv::Rect(x, y, std::min(w, this->frame_width_), std::min(h, this->frame_height_));
+}
+
+void LiveView::clampView()
+{
+    this->zoom_ = std::clamp(this->zoom_, kMinZoom, kMaxZoom);
+    const double half_w = this->frame_width_ / this->zoom_ / 2.0;
+    const double half_h = this->frame_height_ / this->zoom_ / 2.0;
+    this->centre_x_ = std::clamp(this->centre_x_, half_w, this->frame_width_ - half_w);
+    this->centre_y_ = std::clamp(this->centre_y_, half_h, this->frame_height_ - half_h);
+}
+
+void LiveView::zoomBy(double factor, double anchor_x, double anchor_y)
+{
+    const double before = this->zoom_;
+    this->zoom_ = std::clamp(this->zoom_ * factor, kMinZoom, kMaxZoom);
+    if (this->zoom_ == before)
+        return;
+
+    // Hold the anchor still: the point under the cursor should not slide away while zooming, which is the difference
+    // between a usable magnifier and a frustrating one.
+    const double ratio = before / this->zoom_;
+    this->centre_x_ = anchor_x + (this->centre_x_ - anchor_x) * ratio;
+    this->centre_y_ = anchor_y + (this->centre_y_ - anchor_y) * ratio;
+    this->clampView();
+}
+
+void LiveView::panBy(double dx_canvas, double dy_canvas)
+{
+    // Canvas pixels are not frame pixels once magnified, so the movement is divided by the zoom: dragging by a
+    // centimetre moves the image by a centimetre whatever the magnification.
+    this->centre_x_ -= dx_canvas / this->zoom_;
+    this->centre_y_ -= dy_canvas / this->zoom_;
+    this->clampView();
+}
+
+void LiveView::resetView()
+{
+    this->zoom_ = 1.0;
+    this->centre_x_ = this->frame_width_ / 2.0;
+    this->centre_y_ = this->frame_height_ / 2.0;
+}
+
+const FrameGeometry& LiveView::geometry() const
+{
+    return this->geometry_;
+}
+
+double LiveView::zoom() const
+{
+    return this->zoom_;
+}
+
+bool LiveView::takeWheel(int& steps)
+{
+    SliderState& s = sliders();
+    if (s.wheel_steps == 0)
+        return false;
+    steps = s.wheel_steps;
+    s.wheel_steps = 0;
+    return true;
+}
+
+bool LiveView::takeRightDrag(int& dx, int& dy)
+{
+    SliderState& s = sliders();
+    if (!s.right_held || (s.right_dx == 0 && s.right_dy == 0))
+        return false;
+    dx = s.right_dx;
+    dy = s.right_dy;
+    s.right_dx = 0;
+    s.right_dy = 0;
+    return true;
+}
+
 bool LiveView::windowToFrame(int window_x, int window_y, int& x, int& y) const
 {
     if (!this->open_)
@@ -417,8 +559,15 @@ bool LiveView::windowToFrame(int window_x, int window_y, int& x, int& y) const
     if (visible.width <= 0 || visible.height <= 0)
         return false;
 
-    x = static_cast<int>(static_cast<double>(window_x) * this->frame_width_ / visible.width);
-    y = static_cast<int>(static_cast<double>(window_y) * this->frame_height_ / visible.height);
+    // Two steps, not one. Window -> CANVAS, because the window is scaled to whatever size it was dragged to; then
+    // canvas -> FRAME, because the canvas holds a magnified crop rather than the whole frame. Collapsing these into
+    // one factor is exactly the bug that makes a click land somewhere else as soon as the zoom is not 1.
+    const double canvas_x = static_cast<double>(window_x) * this->frame_width_ / visible.width;
+    const double canvas_y = static_cast<double>(window_y) * this->frame_height_ / visible.height;
+
+    const cv::Rect region = this->visibleRegion();
+    x = static_cast<int>(region.x + canvas_x * region.width / this->frame_width_);
+    y = static_cast<int>(region.y + canvas_y * region.height / this->frame_height_);
     return x >= 0 && y >= 0 && x < this->frame_width_ && y < this->frame_height_;
 }
 
@@ -496,7 +645,17 @@ void LiveView::drawHud(cv::Mat& image, const ModelState& state, const Overlay& o
 
     lines.push_back(fixed1(state.fps) + " fps    dropped " + std::to_string(state.dropped) +
                     "    seq " + std::to_string(state.sequence));
-    lines.push_back(std::string("stretch ") + (this->options_.stretch ? "on " : "off") + "    " + overlay.bayer_note);
+    std::string third = std::string("stretch ") + (this->options_.stretch ? "on " : "off") + "    " +
+                        overlay.bayer_note;
+    if (this->zoom_ > 1.0)
+    {
+        const cv::Rect region = this->visibleRegion();
+        third += "    zoom " + fixed1(this->zoom_) + "x @ " + std::to_string(region.x) + "," +
+                 std::to_string(region.y);
+    }
+    if (this->geometry_.bin > 1)
+        third += "    bin" + std::to_string(this->geometry_.bin);
+    lines.push_back(third);
 
     if (!overlay.reticle_text.empty())
         lines.push_back(overlay.reticle_text);
@@ -568,14 +727,36 @@ void LiveView::drawProgress(cv::Mat& image, const ModelState& state) const
 
 void LiveView::drawReticles(cv::Mat& image) const
 {
-    // Drawn into a canvas that has the SENSOR resolution, so the coordinates need no scaling and a mark stays on its
-    // photosite however the window is sized. highgui does the scaling when it displays.
+    // THE COORDINATE CHAIN, and the reason a reticle survives everything: it is stored against the SENSOR, converted
+    // to the current FRAME through the ROI and the binning, and then to the CANVAS through the zoom and the pan. Any
+    // of those three can change without the mark moving on the sky.
+    const cv::Rect region = this->visibleRegion();
+    if (region.width <= 0 || region.height <= 0)
+        return;
+
+    const double canvas_per_frame_x = static_cast<double>(this->frame_width_) / region.width;
+    const double canvas_per_frame_y = static_cast<double>(this->frame_height_) / region.height;
+    const double size_scale = sensorToFrameScale(this->geometry_) * canvas_per_frame_x;
+
     for (std::size_t i = 0; i < this->reticles_.size(); ++i)
     {
         const Reticle& item = this->reticles_.at(i);
-        double cx = 0.0;
-        double cy = 0.0;
-        this->reticles_.resolvePosition(i, this->frame_width_, this->frame_height_, cx, cy);
+        double sensor_x = 0.0;
+        double sensor_y = 0.0;
+        this->reticles_.resolvePosition(i, this->geometry_, sensor_x, sensor_y);
+
+        double frame_x = 0.0;
+        double frame_y = 0.0;
+        sensorToFrame(this->geometry_, sensor_x, sensor_y, frame_x, frame_y);
+
+        const double cx = (frame_x - region.x) * canvas_per_frame_x;
+        const double cy = (frame_y - region.y) * canvas_per_frame_y;
+
+        // Outside the visible region there is nothing to draw. Cheap, and it keeps a mark that is off-screen from
+        // painting a stray line along the edge once the arm is long.
+        if (cx < -item.arm * size_scale || cy < -item.arm * size_scale ||
+            cx > image.cols + item.arm * size_scale || cy > image.rows + item.arm * size_scale)
+            continue;
 
         const bool chosen = this->reticles_.hasSelection() && this->reticles_.selected() == i;
         const cv::Scalar colour = chosen ? cv::Scalar(80, 255, 255) : cv::Scalar(60, 200, 200);
@@ -583,8 +764,8 @@ void LiveView::drawReticles(cv::Mat& image) const
 
         const int fx = toFixed(cx);
         const int fy = toFixed(cy);
-        const int arm = toFixed(item.arm);
-        const int gap = toFixed(item.gap);
+        const int arm = toFixed(item.arm * size_scale);
+        const int gap = toFixed(item.gap * size_scale);
 
         // Four segments rather than two crossing lines: the central gap is the point of this shape, so that the
         // photosite being marked is never covered by the mark.
@@ -598,12 +779,13 @@ void LiveView::drawReticles(cv::Mat& image) const
                  cv::LINE_AA, kSubPixelShift);
 
         for (double radius : item.circles)
-            cv::circle(image, cv::Point(fx, fy), toFixed(radius), colour, thickness, cv::LINE_AA, kSubPixelShift);
+            cv::circle(image, cv::Point(fx, fy), toFixed(radius * size_scale), colour, thickness, cv::LINE_AA,
+                       kSubPixelShift);
 
         if (chosen)
         {
             // A small open square marks the selection, so it is obvious which reticle the keys are about to move.
-            const int handle = toFixed(item.gap + 4.0);
+            const int handle = toFixed((item.gap + 4.0) * size_scale);
             cv::rectangle(image, cv::Point(fx - handle, fy - handle), cv::Point(fx + handle, fy + handle),
                           cv::Scalar(255, 255, 255), 1, cv::LINE_AA, kSubPixelShift);
         }

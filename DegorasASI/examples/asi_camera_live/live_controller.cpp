@@ -67,6 +67,10 @@ constexpr double kArmStep = 2.0;
 constexpr double kGapStep = 1.0;
 constexpr double kCircleStep = 2.0;
 
+// One wheel notch, or one press of the zoom key. A factor rather than an increment, so the steps feel even across the
+// whole range instead of crawling at 1x and leaping at 20x.
+constexpr double kZoomFactor = 1.25;
+
 // Arrow keys as cv::waitKeyEx reports them on Windows. Named rather than inline because they are PLATFORM-SPECIFIC
 // and the digit keys below exist precisely so the feature does not depend on them: if a build reports different
 // codes, 4/6/8/2 still move the reticle and only this table needs revisiting.
@@ -122,16 +126,42 @@ void LiveController::pumpSliders()
 void LiveController::pumpMouse()
 {
     ReticleSet& set = this->view_.reticles();
-    const int width = this->view_.frameWidth();
-    const int height = this->view_.frameHeight();
+    const FrameGeometry& geometry = this->view_.geometry();
+
+    // Zoom at the cursor, so the thing being examined does not slide out from under it.
+    int notches = 0;
+    if (this->view_.takeWheel(notches))
+    {
+        int anchor_x = 0;
+        int anchor_y = 0;
+        if (!this->view_.probePointInFrame(anchor_x, anchor_y))
+        {
+            anchor_x = this->view_.frameWidth() / 2;
+            anchor_y = this->view_.frameHeight() / 2;
+        }
+        const double factor = (notches > 0) ? kZoomFactor : (1.0 / kZoomFactor);
+        for (int i = 0; i < std::abs(notches); ++i)
+            this->view_.zoomBy(factor, anchor_x, anchor_y);
+    }
+
+    int drag_x = 0;
+    int drag_y = 0;
+    if (this->view_.takeRightDrag(drag_x, drag_y))
+        this->view_.panBy(drag_x, drag_y);
 
     int x = 0;
     int y = 0;
     if (this->view_.takeMousePressInFrame(x, y))
     {
+        // The click arrives in frame coordinates and the reticles live in sensor coordinates, so it is converted
+        // rather than compared directly -- which is what keeps selection working at any binning or ROI.
+        double sensor_x = 0.0;
+        double sensor_y = 0.0;
+        frameToSensor(geometry, x, y, sensor_x, sensor_y);
+
         // A press that lands nowhere near a reticle DESELECTS rather than creating one. Creation is a key, so that
         // clicking on the image to look at something cannot leave a mark behind.
-        if (!set.selectNear(x, y, width, height, kGrabRadius))
+        if (!set.selectNear(sensor_x, sensor_y, geometry, kGrabRadius))
             set.deselect();
     }
 
@@ -143,7 +173,12 @@ void LiveController::pumpMouse()
         int cursor_x = 0;
         int cursor_y = 0;
         if (this->view_.probePointInFrame(cursor_x, cursor_y))
-            set.placeSelected(cursor_x, cursor_y, width, height);
+        {
+            double sensor_x = 0.0;
+            double sensor_y = 0.0;
+            frameToSensor(geometry, cursor_x, cursor_y, sensor_x, sensor_y);
+            set.placeSelected(sensor_x, sensor_y, geometry);
+        }
     }
 }
 
@@ -180,12 +215,12 @@ std::string LiveController::selectedReticleText() const
     const Reticle& item = set.at(index);
     double x = 0.0;
     double y = 0.0;
-    set.resolvePosition(index, this->view_.frameWidth(), this->view_.frameHeight(), x, y);
+    set.resolvePosition(index, this->view_.geometry(), x, y);
 
     // The numbers are on screen because that is what makes a fine adjustment an adjustment rather than a guess.
     std::string text = "reticle " + std::to_string(index + 1) + "/" + std::to_string(set.size()) +
                        (item.centred ? " [centred]" : "") +
-                       "  x " + fixed2(x) + "  y " + fixed2(y) +
+                       "  sensor " + fixed2(x) + "," + fixed2(y) +
                        "  arm " + fixed1(item.arm) + "  gap " + fixed1(item.gap);
     if (!item.circles.empty())
         text += "  circle " + fixed1(item.circles.back());
@@ -197,8 +232,7 @@ bool LiveController::handleKey(int key, types::Frame& frame, const cv::Mat& disp
 {
     // Reticles first, so their keys are handled whatever the rest of the map does.
     ReticleSet& set = this->view_.reticles();
-    const int width = this->view_.frameWidth();
-    const int height = this->view_.frameHeight();
+    const FrameGeometry& geometry = this->view_.geometry();
     const double step = this->fine_ ? kFineNudge : kCoarseNudge;
 
     switch (key)
@@ -230,8 +264,12 @@ bool LiveController::handleKey(int key, types::Frame& frame, const cv::Mat& disp
             int y = 0;
             if (this->view_.probePointInFrame(x, y))
             {
-                set.addAt(static_cast<double>(x), static_cast<double>(y));
-                std::cout << "  reticle " << set.size() << " added at " << x << "," << y << "\n";
+                double sensor_x = 0.0;
+                double sensor_y = 0.0;
+                frameToSensor(geometry, x, y, sensor_x, sensor_y);
+                set.addAt(sensor_x, sensor_y);
+                std::cout << "  reticle " << set.size() << " added at sensor "
+                          << sensor_x << "," << sensor_y << "\n";
             }
             else
             {
@@ -259,10 +297,18 @@ bool LiveController::handleKey(int key, types::Frame& frame, const cv::Mat& disp
             std::cout << "  reticle step: " << (this->fine_ ? "0.1 px (fine)" : "1.0 px") << "\n";
             return true;
 
-        case kKeyLeft:  case '4': set.nudgeSelected(-step, 0.0, width, height); return true;
-        case kKeyRight: case '6': set.nudgeSelected(step, 0.0, width, height);  return true;
-        case kKeyUp:    case '8': set.nudgeSelected(0.0, -step, width, height); return true;
-        case kKeyDown:  case '2': set.nudgeSelected(0.0, step, width, height);  return true;
+        case kKeyLeft:  case '4': set.nudgeSelected(-step, 0.0, geometry); return true;
+        case kKeyRight: case '6': set.nudgeSelected(step, 0.0, geometry);  return true;
+        case kKeyUp:    case '8': set.nudgeSelected(0.0, -step, geometry); return true;
+        case kKeyDown:  case '2': set.nudgeSelected(0.0, step, geometry);  return true;
+
+        // Zoom from the keyboard as well as the wheel: whether a wheel event reaches highgui depends on the backend,
+        // and a magnifier that might not work is worse than one with two ways in.
+        case 'z': this->view_.zoomBy(1.0 / kZoomFactor, this->view_.frameWidth() / 2.0,
+                                     this->view_.frameHeight() / 2.0); return true;
+        case 'Z': this->view_.zoomBy(kZoomFactor, this->view_.frameWidth() / 2.0,
+                                     this->view_.frameHeight() / 2.0); return true;
+        case '0': this->view_.resetView(); return true;
 
         case '[': set.resizeSelectedArm(-kArmStep); return true;
         case ']': set.resizeSelectedArm(kArmStep);  return true;
@@ -401,6 +447,11 @@ void LiveController::printKeys() const
         "  O / U          add a circle / remove the last one\n"
         "  , / .          last circle radius smaller / larger\n"
         "  K              save the reticles now (they are also saved on exit)\n"
+        "\n"
+        "View (the reticles are stored against the SENSOR, so they survive all of this):\n"
+        "  wheel or Z/z   zoom in / out, digital, nearest-neighbour so a photosite stays a square\n"
+        "  right-drag     pan\n"
+        "  0              back to the whole frame\n"
         "  S              save the frame through the library's own writer (FITS/BMP, full depth)\n"
         "  P              save what is on screen as PNG (8-bit, stretched -- for a quick look)\n"
         "  H              print these keys again\n"

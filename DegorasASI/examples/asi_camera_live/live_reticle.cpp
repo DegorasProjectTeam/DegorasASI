@@ -50,6 +50,13 @@ double clampTo(double value, double low, double high)
     return std::max(low, std::min(high, value));
 }
 
+/// Upper bound for a sensor coordinate. Falls back generously when the sensor size is unknown, because clamping to
+/// zero would collapse every reticle onto the corner.
+double sensorLimit(int sensor_extent)
+{
+    return (sensor_extent > 1) ? static_cast<double>(sensor_extent - 1) : 1.0e9;
+}
+
 /// Splits "circles=25,60" style lists.
 std::vector<double> parseRadii(const std::string& csv)
 {
@@ -73,6 +80,40 @@ std::vector<double> parseRadii(const std::string& csv)
 }
 
 }   // namespace
+
+// ---------------------------------------------------------------------------------------------------------------------
+
+FrameGeometry::FrameGeometry() :
+    start_x(0),
+    start_y(0),
+    bin(1),
+    width(0),
+    height(0),
+    sensor_width(0),
+    sensor_height(0)
+{
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+
+void sensorToFrame(const FrameGeometry& geometry, double sensor_x, double sensor_y, double& x, double& y)
+{
+    const double bin = (geometry.bin > 0) ? geometry.bin : 1.0;
+    x = sensor_x / bin - geometry.start_x;
+    y = sensor_y / bin - geometry.start_y;
+}
+
+void frameToSensor(const FrameGeometry& geometry, double x, double y, double& sensor_x, double& sensor_y)
+{
+    const double bin = (geometry.bin > 0) ? geometry.bin : 1.0;
+    sensor_x = (x + geometry.start_x) * bin;
+    sensor_y = (y + geometry.start_y) * bin;
+}
+
+double sensorToFrameScale(const FrameGeometry& geometry)
+{
+    return (geometry.bin > 0) ? (1.0 / geometry.bin) : 1.0;
+}
 
 // ---------------------------------------------------------------------------------------------------------------------
 
@@ -177,8 +218,10 @@ void ReticleSet::clear()
 
 // ---------------------------------------------------------------------------------------------------------------------
 
-bool ReticleSet::selectNear(double x, double y, int frame_width, int frame_height, double radius)
+bool ReticleSet::selectNear(double x, double y, const FrameGeometry& geometry, double radius)
 {
+    // Everything here is in SENSOR pixels, the radius included, so the reach of a click is a physical distance and
+    // does not silently double when the stream is binned.
     std::size_t best = this->items_.size();
     double best_distance = radius;
 
@@ -186,7 +229,7 @@ bool ReticleSet::selectNear(double x, double y, int frame_width, int frame_heigh
     {
         double rx = 0.0;
         double ry = 0.0;
-        this->resolvePosition(i, frame_width, frame_height, rx, ry);
+        this->resolvePosition(i, geometry, rx, ry);
         const double distance = std::hypot(rx - x, ry - y);
         if (distance <= best_distance)
         {
@@ -213,26 +256,29 @@ void ReticleSet::deselect()
 
 // ---------------------------------------------------------------------------------------------------------------------
 
-void ReticleSet::nudgeSelected(double dx, double dy, int frame_width, int frame_height)
+void ReticleSet::nudgeSelected(double dx, double dy, const FrameGeometry& geometry)
 {
     if (!this->hasSelection())
         return;
     Reticle& item = this->items_[this->selected_];
     if (item.centred)
         return;
-    item.x = clampTo(item.x + dx, 0.0, static_cast<double>(frame_width - 1));
-    item.y = clampTo(item.y + dy, 0.0, static_cast<double>(frame_height - 1));
+    // Clamped to the SENSOR, not to the frame. A reticle may legitimately sit outside the current ROI -- that is
+    // what makes it survive a ROI change -- so clamping to the visible region would drag marks about every time that
+    // region moved.
+    item.x = clampTo(item.x + dx, 0.0, sensorLimit(geometry.sensor_width));
+    item.y = clampTo(item.y + dy, 0.0, sensorLimit(geometry.sensor_height));
 }
 
-void ReticleSet::placeSelected(double x, double y, int frame_width, int frame_height)
+void ReticleSet::placeSelected(double x, double y, const FrameGeometry& geometry)
 {
     if (!this->hasSelection())
         return;
     Reticle& item = this->items_[this->selected_];
     if (item.centred)
         return;
-    item.x = clampTo(x, 0.0, static_cast<double>(frame_width - 1));
-    item.y = clampTo(y, 0.0, static_cast<double>(frame_height - 1));
+    item.x = clampTo(x, 0.0, sensorLimit(geometry.sensor_width));
+    item.y = clampTo(y, 0.0, sensorLimit(geometry.sensor_height));
 }
 
 void ReticleSet::resizeSelectedArm(double delta)
@@ -285,15 +331,19 @@ void ReticleSet::resizeSelectedCircle(double delta)
 
 // ---------------------------------------------------------------------------------------------------------------------
 
-void ReticleSet::resolvePosition(std::size_t index, int frame_width, int frame_height, double& x, double& y) const
+void ReticleSet::resolvePosition(std::size_t index, const FrameGeometry& geometry, double& x, double& y) const
 {
     const Reticle& item = this->items_.at(index);
     if (item.centred)
     {
-        // Half a pixel less than the half width, so the mark sits on the centre of the sensor rather than on the
-        // boundary between the two middle photosites of an even-sized frame.
-        x = (frame_width - 1) / 2.0;
-        y = (frame_height - 1) / 2.0;
+        // The centre of the ROI, expressed in sensor coordinates like everything else. Deliberately the ROI and not
+        // the sensor: this is the "middle of what I am looking at" mark and it follows a ROI change on purpose. A mark
+        // for a fixed optical axis is an ordinary reticle at fixed sensor coordinates, which is the other half of why
+        // both kinds exist.
+        //
+        // Half a pixel less than the half width, so it lands on the centre of a photosite rather than on the boundary
+        // between the two middle ones of an even-sized frame.
+        frameToSensor(geometry, (geometry.width - 1) / 2.0, (geometry.height - 1) / 2.0, x, y);
     }
     else
     {

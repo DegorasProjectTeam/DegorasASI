@@ -139,7 +139,8 @@ public:
      *       snapshot mode writes a picture of exactly what the viewfinder would show, and the only way the reticles
      *       and the progress bar can be checked without a human watching a screen.
      */
-    const cv::Mat& compose(const cv::Mat& image, const ModelState& state, const Overlay& overlay);
+    const cv::Mat& compose(const cv::Mat& image, const ModelState& state, const Overlay& overlay,
+                           const FrameGeometry& geometry);
 
     /**
      * @brief Composes and shows one frame.
@@ -149,7 +150,8 @@ public:
      * @note Throttled: see the implementation. compose() is not, so a caller that wants every frame drawn should use
      *       that one.
      */
-    void render(const cv::Mat& image, const ModelState& state, const Overlay& overlay);
+    void render(const cv::Mat& image, const ModelState& state, const Overlay& overlay,
+                const FrameGeometry& geometry);
 
     /**
      * @brief Width of the frames being shown, in pixels.
@@ -185,6 +187,56 @@ public:
      * @return True when there was a movement to report.
      */
     bool takeGainRequest(long long& value);
+
+    /**
+     * @brief Multiplies the zoom, keeping one frame position fixed under the cursor.
+     * @param factor   Multiplier; above one zooms in.
+     * @param anchor_x Frame column to hold still.
+     * @param anchor_y Frame row to hold still.
+     * @note Zoom is DIGITAL: it crops the frame and enlarges the crop with nearest-neighbour, so a magnified pixel
+     *       stays a square of one value rather than being invented by interpolation. That matters when the thing being
+     *       looked at is a two-pixel star.
+     */
+    void zoomBy(double factor, double anchor_x, double anchor_y);
+
+    /**
+     * @brief Moves the visible region.
+     * @param dx_canvas Horizontal movement in canvas pixels.
+     * @param dy_canvas Vertical movement in canvas pixels.
+     */
+    void panBy(double dx_canvas, double dy_canvas);
+
+    /**
+     * @brief Returns to showing the whole frame.
+     */
+    void resetView();
+
+    /**
+     * @brief The frame-to-sensor relationship used by the last composition.
+     * @return The geometry, so the controller can work in sensor coordinates without being handed it separately.
+     */
+    const FrameGeometry& geometry() const;
+
+    /**
+     * @brief The current zoom factor.
+     * @return One when the whole frame is visible, higher when magnified.
+     */
+    double zoom() const;
+
+    /**
+     * @brief Whether a wheel movement happened since the last call, and in which direction.
+     * @param steps Receives the notches: positive away from the user.
+     * @return True when there was a movement to report.
+     */
+    bool takeWheel(int& steps);
+
+    /**
+     * @brief Whether the right button is held, and how far it has moved since the last call.
+     * @param dx Receives the horizontal movement in window pixels.
+     * @param dy Receives the vertical movement in window pixels.
+     * @return True when a right-drag is in progress and there was movement.
+     */
+    bool takeRightDrag(int& dx, int& dy);
 
     /**
      * @brief The cursor position expressed in FRAME coordinates.
@@ -265,6 +317,12 @@ private:
     /// @brief Draws every reticle, with the selected one picked out.
     void drawReticles(cv::Mat& image) const;
 
+    /// @brief The part of the frame currently visible, in frame pixels.
+    cv::Rect visibleRegion() const;
+
+    /// @brief Keeps the visible region inside the frame after a zoom or a pan.
+    void clampView();
+
     /**
      * @brief Maps a window position to frame coordinates.
      * @param window_x Column in window pixels.
@@ -289,6 +347,10 @@ private:
     bool show_reticles_;         ///< Whether the reticles are drawn.
     ReticleSet reticles_;        ///< The aiming marks, owned by the view because they are an overlay.
     mutable cv::Mat canvas_;     ///< Scratch the overlay is drawn onto, so the caller's image is left alone.
+    double zoom_;                ///< 1.0 shows the whole frame; higher magnifies.
+    double centre_x_;            ///< Frame column at the centre of the visible region.
+    double centre_y_;            ///< Frame row at the centre of the visible region.
+    FrameGeometry geometry_;     ///< The frame's relationship to the sensor, as of the last composition.
     std::chrono::steady_clock::time_point last_render_;   ///< When the last composition happened.
     std::uint64_t last_drawn_sequence_;                   ///< Sequence of the frame last composed.
 };

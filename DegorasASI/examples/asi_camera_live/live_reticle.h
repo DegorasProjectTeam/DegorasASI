@@ -41,11 +41,15 @@ namespace live
 // draw itself in one particular toolkit is a model that has to be rewritten. So positions and sizes are plain doubles,
 // hit-testing is arithmetic, and the drawing lives in the view.
 //
-// TWO DECISIONS WORTH KNOWING.
+// THREE DECISIONS WORTH KNOWING.
 //
-//   * COORDINATES ARE SENSOR PIXELS, not window pixels. A reticle marks a physical place on the sensor -- where a
-//     return is expected to land -- so it must stay on that photosite when the window is resized or scaled. The view
-//     maps to window coordinates at draw time and back at click time; nothing here knows the window exists.
+//   * COORDINATES ARE ABSOLUTE SENSOR PIXELS, unbinned, and that is the whole point. A reticle marks a physical
+//     photosite -- where a return is expected to land -- so it has to survive everything that changes what is on
+//     screen without changing the sensor: a resized window, a digital zoom, a pan, a different binning factor, a
+//     different ROI. Store a frame coordinate and every one of those strands the mark somewhere else. Store the
+//     sensor coordinate and the mark stays on the sky.
+//   * SIZES ARE SENSOR PIXELS TOO. An arm of 40 covers forty photosites whether the stream is binned or not, so a
+//     circle drawn around a target keeps meaning the same angle on the sky when the binning changes.
 //   * POSITIONS ARE SUB-PIXEL. They are doubles because the point of a fine adjustment is to land between photosites:
 //     the centroid of a return is not an integer, so a reticle that can only sit on integers cannot be aligned with
 //     one. The coarse step is a whole pixel and the fine step a tenth.
@@ -53,6 +57,54 @@ namespace live
 // A reticle is a cross with a central GAP -- so it marks a point without covering it -- plus any number of concentric
 // circles, which is the classic viewfinder arrangement for judging both position and angular size.
 // ---------------------------------------------------------------------------------------------------------------------
+
+/**
+ * @brief What is needed to relate a frame to the sensor it came from.
+ * @note The one place the mapping is written down. The vendor reports the ROI origin in POST-BINNING coordinates, so
+ *       the conversion is (frame + origin) * bin and not the other way round -- getting that backwards puts a reticle
+ *       in the right place at bin 1 and the wrong place everywhere else, which is the kind of bug that survives a
+ *       casual test.
+ */
+struct FrameGeometry
+{
+    /// @brief Establishes an identity geometry: no ROI offset, no binning, no size.
+    FrameGeometry();
+
+    int start_x;         ///< ROI origin column, in post-binning sensor coordinates.
+    int start_y;         ///< ROI origin row, in post-binning sensor coordinates.
+    int bin;             ///< Binning factor; 1 means unbinned.
+    int width;           ///< Frame width, in frame pixels.
+    int height;          ///< Frame height, in frame pixels.
+    int sensor_width;    ///< Full sensor width, unbinned, for clamping.
+    int sensor_height;   ///< Full sensor height, unbinned, for clamping.
+};
+
+/**
+ * @brief Converts an absolute sensor position to a position within the current frame.
+ * @param geometry The frame's relationship to the sensor.
+ * @param sensor_x Sensor column, unbinned.
+ * @param sensor_y Sensor row, unbinned.
+ * @param x        Receives the frame column, which may fall outside the frame.
+ * @param y        Receives the frame row, which may fall outside the frame.
+ */
+void sensorToFrame(const FrameGeometry& geometry, double sensor_x, double sensor_y, double& x, double& y);
+
+/**
+ * @brief Converts a position within the current frame to an absolute sensor position.
+ * @param geometry The frame's relationship to the sensor.
+ * @param x        Frame column.
+ * @param y        Frame row.
+ * @param sensor_x Receives the sensor column, unbinned.
+ * @param sensor_y Receives the sensor row, unbinned.
+ */
+void frameToSensor(const FrameGeometry& geometry, double x, double y, double& sensor_x, double& sensor_y);
+
+/**
+ * @brief How many frame pixels one sensor pixel spans.
+ * @param geometry The frame's relationship to the sensor.
+ * @return The factor to multiply a sensor-pixel length by to get a frame-pixel length.
+ */
+double sensorToFrameScale(const FrameGeometry& geometry);
 
 /**
  * @brief One aiming mark: a gapped cross plus concentric circles.
@@ -63,13 +115,13 @@ struct Reticle
     /// @brief Establishes a reticle at the origin with a legible default cross and no circles.
     Reticle();
 
-    double x;                       ///< Sensor column, sub-pixel. Ignored while centred is true.
-    double y;                       ///< Sensor row, sub-pixel. Ignored while centred is true.
-    double arm;                     ///< Half-length of each cross arm, in sensor pixels.
+    double x;                       ///< Absolute sensor column, unbinned, sub-pixel. Ignored while centred.
+    double y;                       ///< Absolute sensor row, unbinned, sub-pixel. Ignored while centred.
+    double arm;                     ///< Half-length of each cross arm, in unbinned sensor pixels.
     double gap;                     ///< Radius left blank at the centre, so the marked point stays visible.
     int thickness;                  ///< Line thickness, in window pixels.
     bool centred;                   ///< Follows the frame centre instead of x,y, so a geometry change cannot strand it.
-    std::vector<double> circles;    ///< Radii of the concentric circles, in sensor pixels. May be empty.
+    std::vector<double> circles;    ///< Radii of the concentric circles, in unbinned sensor pixels. May be empty.
 };
 
 /**
@@ -149,12 +201,11 @@ public:
      * @brief Selects the reticle nearest to a sensor position, if one is close enough.
      * @param x            Sensor column.
      * @param y            Sensor row.
-     * @param frame_width  Frame width, needed to resolve a centred reticle's position.
-     * @param frame_height Frame height, needed for the same reason.
+     * @param geometry     The frame's relationship to the sensor.
      * @param radius       How near the point must be, in sensor pixels.
      * @return True when the selection changed to a reticle; false when nothing was near enough.
      */
-    bool selectNear(double x, double y, int frame_width, int frame_height, double radius);
+    bool selectNear(double x, double y, const FrameGeometry& geometry, double radius);
 
     /**
      * @brief Selects one reticle by index.
@@ -171,21 +222,19 @@ public:
      * @brief Moves the selected reticle by an offset, clamped to the frame.
      * @param dx           Columns to add.
      * @param dy           Rows to add.
-     * @param frame_width  Frame width, for clamping.
-     * @param frame_height Frame height, for clamping.
+     * @param geometry     The frame's relationship to the sensor, for clamping to the sensor.
      * @note A centred reticle is not moved: it is defined by the frame, so nudging it would be a contradiction.
      */
-    void nudgeSelected(double dx, double dy, int frame_width, int frame_height);
+    void nudgeSelected(double dx, double dy, const FrameGeometry& geometry);
 
     /**
      * @brief Places the selected reticle at a sensor position, clamped to the frame.
      * @param x            Sensor column.
      * @param y            Sensor row.
-     * @param frame_width  Frame width, for clamping.
-     * @param frame_height Frame height, for clamping.
+     * @param geometry     The frame's relationship to the sensor, for clamping to the sensor.
      * @note A centred reticle is not moved, for the same reason as nudgeSelected().
      */
-    void placeSelected(double x, double y, int frame_width, int frame_height);
+    void placeSelected(double x, double y, const FrameGeometry& geometry);
 
     /**
      * @brief Changes the selected reticle's cross arm length.
@@ -219,12 +268,11 @@ public:
     /**
      * @brief The position a reticle is drawn at, resolving the centred case.
      * @param index        Which reticle.
-     * @param frame_width  Frame width.
-     * @param frame_height Frame height.
-     * @param x            Receives the sensor column.
-     * @param y            Receives the sensor row.
+     * @param geometry     The frame's relationship to the sensor.
+     * @param x            Receives the absolute sensor column.
+     * @param y            Receives the absolute sensor row.
      */
-    void resolvePosition(std::size_t index, int frame_width, int frame_height, double& x, double& y) const;
+    void resolvePosition(std::size_t index, const FrameGeometry& geometry, double& x, double& y) const;
 
     /**
      * @brief Writes the set to a text file.

@@ -140,6 +140,7 @@ struct Options
     std::string snap_name;
     std::string format;
     std::string reticles;
+    double zoom;
 };
 
 Options::Options() :
@@ -153,7 +154,8 @@ Options::Options() :
     snap(0),
     snap_name("live_snap"),
     format("RGB24"),
-    reticles("live_reticles.txt")
+    reticles("live_reticles.txt"),
+    zoom(1.0)
 {
 }
 
@@ -175,6 +177,7 @@ void printUsage()
         "  --snap-name S   base name for the --snap output (default live_snap)\n"
         "  --reticles P    reticle file, read at start and written at exit (default live_reticles.txt).\n"
         "                  Pass \"none\" to keep the reticles in memory only\n"
+        "  --zoom F        start magnified F times on the frame centre (default 1, the whole frame)\n"
         "\n";
 }
 
@@ -197,6 +200,7 @@ bool parseArgs(int argc, char** argv, Options& opt)
         else if (arg == "--format" && i + 1 < argc)    { opt.format = argv[++i]; }
         else if (arg == "--snap-name" && i + 1 < argc) { opt.snap_name = argv[++i]; }
         else if (arg == "--reticles" && i + 1 < argc)  { opt.reticles = argv[++i]; }
+        else if (arg == "--zoom" && i + 1 < argc)      { opt.zoom = std::atof(argv[++i]); }
         else
         {
             std::cout << "Unknown argument: " << arg << "\n\n";
@@ -269,11 +273,19 @@ int runSnapshot(live::LiveModel& model, live::LiveView& view, live::LiveControll
 
     // A third file: the frame with everything the viewfinder would draw on it. It costs one composition and it is the
     // only way to check the HUD, the reticles and the progress bar without a person watching a screen.
+    live::FrameGeometry geometry;
+    geometry.start_x = frame.start_x;
+    geometry.start_y = frame.start_y;
+    geometry.bin = frame.bin;
+    geometry.width = frame.width;
+    geometry.height = frame.height;
+    geometry.sensor_width = desc.max_width;
+    geometry.sensor_height = desc.max_height;
+
     live::Overlay overlay;
     overlay.bayer_note = bayerNote(desc, frame, bayer, view.displayOptions().demosaic);
-    overlay.reticle_text = controller.selectedReticleText();
     const std::string view_png = opt.snap_name + "_view.png";
-    const bool view_ok = cv::imwrite(view_png, view.compose(display, model.state(), overlay));
+    const bool view_ok = cv::imwrite(view_png, view.compose(display, model.state(), overlay, geometry));
 
     // The means are the point of this mode: an RGB24 capture and a demosaiced RAW capture of the same scene must
     // agree on which channel is which. If the Bayer code were wrong, B and R would swap.
@@ -391,6 +403,11 @@ int main(int argc, char** argv)
     view.displayOptions().demosaic = opt.demosaic;
     view.displayOptions().stretch  = opt.stretch_set ? opt.stretch : (format == types::ImageFormat::RAW16);
 
+    // Applied before the headless branch, so a snapshot can be taken magnified too -- which is how the reticles were
+    // checked against the zoom without a person driving the wheel.
+    if (opt.zoom > 1.0)
+        view.zoomBy(opt.zoom, live_format.width / 2.0, live_format.height / 2.0);
+
     live::LiveController controller(model, view);
 
     // Loaded before the first frame, so a saved calibration is on screen from the outset rather than appearing a
@@ -432,6 +449,16 @@ int main(int argc, char** argv)
     types::Frame frame;
     cv::Mat display;
     live::Overlay overlay;
+
+    // The frame-to-sensor relationship. Seeded from the stream format so the first composition has something sane,
+    // then taken from each frame: the ROI origin and the binning are properties of the FRAME, and reading them from
+    // there is what lets a reticle survive a change of either.
+    live::FrameGeometry geometry;
+    geometry.bin = live_format.bin;
+    geometry.width = live_format.width;
+    geometry.height = live_format.height;
+    geometry.sensor_width = desc.max_width;
+    geometry.sensor_height = desc.max_height;
     live::DisplayOptions shown = view.displayOptions();
     bool rebuild = false;
 
@@ -446,6 +473,15 @@ int main(int argc, char** argv)
         {
             shown = current;
             rebuild = true;
+        }
+
+        if (arrived && !frame.empty())
+        {
+            geometry.start_x = frame.start_x;
+            geometry.start_y = frame.start_y;
+            geometry.bin = frame.bin;
+            geometry.width = frame.width;
+            geometry.height = frame.height;
         }
 
         if ((arrived || rebuild) && !frame.empty())
@@ -467,7 +503,7 @@ int main(int argc, char** argv)
 
         overlay.reticle_text = controller.selectedReticleText();
 
-        view.render(display, state, overlay);
+        view.render(display, state, overlay, geometry);
 
         controller.pumpSliders();
         controller.pumpMouse();
