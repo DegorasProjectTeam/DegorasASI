@@ -33,6 +33,7 @@
 
 // PROJECT INCLUDES
 #include "live_image.h"
+#include "live_reticle.h"
 #include "live_model.h"
 
 
@@ -62,7 +63,8 @@ struct Overlay
     Overlay();
 
     std::string bayer_note;   ///< What is being done about colour, e.g. "demosaic RG" or "bin>1: no mosaic".
-    std::string probe_text;   ///< The pixel under the cursor, or empty when the cursor is elsewhere.
+    std::string probe_text;    ///< The pixel under the cursor, or empty when the cursor is elsewhere.
+    std::string reticle_text;  ///< The selected reticle's numbers, or empty when nothing is selected.
 };
 
 /**
@@ -128,12 +130,38 @@ public:
     void syncSliders(const ModelState& state);
 
     /**
-     * @brief Draws one frame: the image, the HUD, the progress bar and the reticle.
+     * @brief Builds the image that would be shown: the frame plus the HUD, the reticles and the progress bar.
+     * @param image   The 8-bit BGR image to draw onto a copy of. May be empty before the first frame arrives.
+     * @param state   The snapshot the HUD and the progress bar describe.
+     * @param overlay The words to draw.
+     * @return The composed image, owned by the view and valid until the next call.
+     * @note Separate from render() so the overlay can be produced with NO WINDOW at all -- which is how the headless
+     *       snapshot mode writes a picture of exactly what the viewfinder would show, and the only way the reticles
+     *       and the progress bar can be checked without a human watching a screen.
+     */
+    const cv::Mat& compose(const cv::Mat& image, const ModelState& state, const Overlay& overlay);
+
+    /**
+     * @brief Composes and shows one frame.
      * @param image   The 8-bit BGR image to show. May be empty before the first frame arrives.
      * @param state   The snapshot the HUD and the progress bar describe.
      * @param overlay The words to draw.
+     * @note Throttled: see the implementation. compose() is not, so a caller that wants every frame drawn should use
+     *       that one.
      */
     void render(const cv::Mat& image, const ModelState& state, const Overlay& overlay);
+
+    /**
+     * @brief Width of the frames being shown, in pixels.
+     * @return The width.
+     */
+    int frameWidth() const;
+
+    /**
+     * @brief Height of the frames being shown, in pixels.
+     * @return The height.
+     */
+    int frameHeight() const;
 
     /**
      * @brief Pumps the GUI and returns any key pressed.
@@ -183,8 +211,36 @@ public:
     /// @brief Shows or hides the HUD.
     void toggleHud();
 
-    /// @brief Shows or hides the centre reticle.
-    void toggleCrosshair();
+    /// @brief Shows or hides every reticle at once.
+    void toggleReticles();
+
+    /**
+     * @brief Whether the reticles are being drawn.
+     * @return True when they are.
+     */
+    bool reticlesVisible() const;
+
+    /**
+     * @brief The reticles this view draws, for the controller to edit.
+     * @return A reference to the live set.
+     * @note They belong to the VIEW, not to the model: a reticle is an overlay on the picture, not a property of the
+     *       camera. Nothing about them reaches the acquisition thread.
+     */
+    ReticleSet& reticles();
+
+    /**
+     * @brief Whether a mouse button press has happened since the last call, in FRAME coordinates.
+     * @param x Receives the column.
+     * @param y Receives the row.
+     * @return True when there was a press to report and it fell on the image.
+     */
+    bool takeMousePressInFrame(int& x, int& y);
+
+    /**
+     * @brief Whether the mouse button is currently held down.
+     * @return True while it is, which is what makes a drag a drag.
+     */
+    bool mouseHeld() const;
 
     /**
      * @brief Whether the percentile stretch is currently on.
@@ -206,8 +262,18 @@ private:
     /// @brief Draws the wait-for-next-frame bar along the bottom of the image.
     void drawProgress(cv::Mat& image, const ModelState& state) const;
 
-    /// @brief Draws the centre reticle.
-    void drawCrosshair(cv::Mat& image) const;
+    /// @brief Draws every reticle, with the selected one picked out.
+    void drawReticles(cv::Mat& image) const;
+
+    /**
+     * @brief Maps a window position to frame coordinates.
+     * @param window_x Column in window pixels.
+     * @param window_y Row in window pixels.
+     * @param x        Receives the frame column.
+     * @param y        Receives the frame row.
+     * @return False when the window has no usable size.
+     */
+    bool windowToFrame(int window_x, int window_y, int& x, int& y) const;
 
     std::string title_;          ///< Window name, which is also highgui's handle for it.
     int frame_width_;            ///< Width of the frames being shown.
@@ -220,7 +286,8 @@ private:
     long long gain_max_;         ///< Top of the gain slider.
     DisplayOptions options_;     ///< What the user has asked to be done to the frames.
     bool show_hud_;              ///< Whether the HUD is drawn.
-    bool show_crosshair_;        ///< Whether the reticle is drawn.
+    bool show_reticles_;         ///< Whether the reticles are drawn.
+    ReticleSet reticles_;        ///< The aiming marks, owned by the view because they are an overlay.
     mutable cv::Mat canvas_;     ///< Scratch the overlay is drawn onto, so the caller's image is left alone.
     std::chrono::steady_clock::time_point last_render_;   ///< When the last composition happened.
     std::uint64_t last_drawn_sequence_;                   ///< Sequence of the frame last composed.

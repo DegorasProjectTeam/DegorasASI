@@ -23,6 +23,9 @@
 
 #pragma once
 
+// C++ INCLUDES
+#include <string>
+
 // OPENCV INCLUDES
 #include <opencv2/core.hpp>
 
@@ -70,6 +73,37 @@ public:
     void pumpSliders();
 
     /**
+     * @brief Handles mouse selection and dragging of reticles.
+     * @note Call once per iteration. A press selects the nearest reticle within reach; holding the button then drags
+     *       it. Placing a NEW reticle is a key rather than a click, so that a stray click cannot litter the image.
+     */
+    void pumpMouse();
+
+    /**
+     * @brief Sets the file the reticles are read from and written to.
+     * @param path Path to use. An empty path disables loading and saving.
+     */
+    void setReticleFile(const std::string& path);
+
+    /**
+     * @brief Loads the reticles from the configured file.
+     * @return True when reticles were read.
+     */
+    bool loadReticles();
+
+    /**
+     * @brief Writes the reticles to the configured file.
+     * @return True on success; false when no file is configured or the write failed.
+     */
+    bool saveReticles() const;
+
+    /**
+     * @brief A one-line description of the selected reticle, for the HUD.
+     * @return The text, or an empty string when nothing is selected.
+     */
+    std::string selectedReticleText() const;
+
+    /**
      * @brief Acts on one key press.
      * @param key     The key code from the view, or -1 for none.
      * @param frame   The frame currently on screen, for the save commands. May be empty.
@@ -87,7 +121,9 @@ private:
 
     LiveModel& model_;   ///< Where requests go.
     LiveView& view_;     ///< Where input comes from, and what display toggles act on.
-    int shots_;          ///< Number of files written so far, used to name the next one.
+    int shots_;                  ///< Number of files written so far, used to name the next one.
+    bool fine_;                  ///< Whether a reticle nudge uses the fine step instead of the coarse one.
+    std::string reticle_file_;   ///< Where the reticles are persisted, or empty for not at all.
 };
 
 // ---------------------------------------------------------------------------------------------------------------------

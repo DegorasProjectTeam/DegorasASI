@@ -66,6 +66,10 @@ struct SliderState
     bool suppress = false;      ///< Set while the VIEW moves a slider, so its own movement is not read back.
     int mouse_x = -1;
     int mouse_y = -1;
+    bool button_held = false;    ///< True between press and release, which is what makes a drag a drag.
+    bool press_pending = false;  ///< A press not yet consumed by the controller.
+    int press_x = -1;
+    int press_y = -1;
     long long exposure_min = 1;
     long long exposure_max = 1;
 };
@@ -81,6 +85,16 @@ constexpr int kExposureSteps = 1000;
 
 /// Shortest gap between two compositions. 20 Hz is smooth for a progress bar and cheap; the input rate is separate.
 constexpr double kRenderPeriodMs = 50.0;
+
+// Fractional bits for OpenCV fixed-point drawing. cv::line and cv::circle take integer coordinates plus a shift, so a
+// reticle placed at 512.30 is drawn there instead of being snapped to 512 -- which is the whole reason the position is
+// stored as a double. Four bits is a sixteenth of a pixel, finer than the tenth the keyboard offers.
+constexpr int kSubPixelShift = 4;
+
+int toFixed(double value)
+{
+    return static_cast<int>(std::lround(value * (1 << kSubPixelShift)));
+}
 
 double millisSinceRender(const std::chrono::steady_clock::time_point& then)
 {
@@ -125,11 +139,24 @@ void onGainSlider(int pos, void*)
 
 void onMouse(int event, int x, int y, int, void*)
 {
-    if (event != cv::EVENT_MOUSEMOVE)
-        return;
     SliderState& s = sliders();
+
+    // The position is tracked on every event, not only on a move: a press arriving without a preceding move -- which
+    // happens when the pointer enters the window already down -- would otherwise be placed at a stale position.
     s.mouse_x = x;
     s.mouse_y = y;
+
+    if (event == cv::EVENT_LBUTTONDOWN)
+    {
+        s.button_held = true;
+        s.press_pending = true;
+        s.press_x = x;
+        s.press_y = y;
+    }
+    else if (event == cv::EVENT_LBUTTONUP)
+    {
+        s.button_held = false;
+    }
 }
 
 std::string fixed1(double v)
@@ -145,7 +172,8 @@ std::string fixed1(double v)
 
 Overlay::Overlay() :
     bayer_note(),
-    probe_text()
+    probe_text(),
+    reticle_text()
 {
 }
 
@@ -163,7 +191,8 @@ LiveView::LiveView(const std::string& title, int frame_width, int frame_height) 
     gain_max_(0),
     options_(),
     show_hud_(true),
-    show_crosshair_(false),
+    show_reticles_(true),
+    reticles_(),
     canvas_(),
     last_render_(std::chrono::steady_clock::now()),
     last_drawn_sequence_(0)
@@ -266,22 +295,8 @@ void LiveView::syncSliders(const ModelState& state)
 
 // ---------------------------------------------------------------------------------------------------------------------
 
-void LiveView::render(const cv::Mat& image, const ModelState& state, const Overlay& overlay)
+const cv::Mat& LiveView::compose(const cv::Mat& image, const ModelState& state, const Overlay& overlay)
 {
-    if (!this->open_)
-        return;
-
-    // THROTTLED, because composing a frame is not free: a full-frame copy, the HUD, and an imshow that converts and
-    // scales the whole image. At the loop's input rate that was one core permanently busy redrawing a picture that
-    // had not changed. Keys are still polled every iteration -- responsiveness comes from waitKey(), not from this --
-    // and the only thing that needs redrawing between frames is the progress bar, which nobody can see move faster
-    // than this anyway.
-    const bool forced = (state.sequence != this->last_drawn_sequence_);
-    if (!forced && millisSinceRender(this->last_render_) < kRenderPeriodMs)
-        return;
-    this->last_render_ = std::chrono::steady_clock::now();
-    this->last_drawn_sequence_ = state.sequence;
-
     if (image.empty())
     {
         // Before the first frame there is nothing to show, but the window must still exist and the progress bar must
@@ -298,12 +313,41 @@ void LiveView::render(const cv::Mat& image, const ModelState& state, const Overl
 
     if (this->show_hud_)
         this->drawHud(this->canvas_, state, overlay);
-    if (this->show_crosshair_)
-        this->drawCrosshair(this->canvas_);
+    if (this->show_reticles_)
+        this->drawReticles(this->canvas_);
     if (state.progress_is_useful)
         this->drawProgress(this->canvas_, state);
 
-    cv::imshow(this->title_, this->canvas_);
+    return this->canvas_;
+}
+
+void LiveView::render(const cv::Mat& image, const ModelState& state, const Overlay& overlay)
+{
+    if (!this->open_)
+        return;
+
+    // THROTTLED, because composing a frame is not free: a full-frame copy, the HUD, and an imshow that converts and
+    // scales the whole image. At the loop's input rate that was one core permanently busy redrawing a picture that
+    // had not changed. Keys are still polled every iteration -- responsiveness comes from waitKey(), not from this --
+    // and the only thing that needs redrawing between frames is the progress bar, which nobody can see move faster
+    // than this anyway.
+    const bool forced = (state.sequence != this->last_drawn_sequence_);
+    if (!forced && millisSinceRender(this->last_render_) < kRenderPeriodMs)
+        return;
+    this->last_render_ = std::chrono::steady_clock::now();
+    this->last_drawn_sequence_ = state.sequence;
+
+    cv::imshow(this->title_, this->compose(image, state, overlay));
+}
+
+int LiveView::frameWidth() const
+{
+    return this->frame_width_;
+}
+
+int LiveView::frameHeight() const
+{
+    return this->frame_height_;
 }
 
 int LiveView::pollKey(int wait_ms)
@@ -312,7 +356,9 @@ int LiveView::pollKey(int wait_ms)
         return -1;
     try
     {
-        return cv::waitKey(std::max(1, wait_ms));
+        // waitKeyEx rather than waitKey: the plain one truncates to the low byte, which throws away the arrow keys.
+        // Reticle nudging wants them, so the full code is returned and the controller decides what it recognises.
+        return cv::waitKeyEx(std::max(1, wait_ms));
     }
     catch (const cv::Exception&)
     {
@@ -346,18 +392,34 @@ bool LiveView::takeGainRequest(long long& value)
 bool LiveView::probePointInFrame(int& x, int& y) const
 {
     const SliderState& s = sliders();
-    if (!this->open_ || s.mouse_x < 0 || s.mouse_y < 0)
+    if (s.mouse_x < 0 || s.mouse_y < 0)
+        return false;
+    return this->windowToFrame(s.mouse_x, s.mouse_y, x, y);
+}
+
+bool LiveView::windowToFrame(int window_x, int window_y, int& x, int& y) const
+{
+    if (!this->open_)
         return false;
 
-    // The cursor arrives in WINDOW pixels, and with WINDOW_NORMAL the window is scaled, so it has to be mapped back.
-    // Without this the reported pixel is wrong whenever the window is not 1:1 with the sensor.
-    const cv::Rect visible = cv::getWindowImageRect(this->title_);
+    // Window pixels are not frame pixels: with WINDOW_NORMAL the image is scaled to whatever size the window was
+    // dragged to. Every position arriving from highgui goes through here, so a click and the pixel probe agree, and a
+    // reticle lands on the photosite that was actually clicked.
+    cv::Rect visible;
+    try
+    {
+        visible = cv::getWindowImageRect(this->title_);
+    }
+    catch (const cv::Exception&)
+    {
+        return false;
+    }
     if (visible.width <= 0 || visible.height <= 0)
         return false;
 
-    x = static_cast<int>(static_cast<double>(s.mouse_x) * this->frame_width_ / visible.width);
-    y = static_cast<int>(static_cast<double>(s.mouse_y) * this->frame_height_ / visible.height);
-    return true;
+    x = static_cast<int>(static_cast<double>(window_x) * this->frame_width_ / visible.width);
+    y = static_cast<int>(static_cast<double>(window_y) * this->frame_height_ / visible.height);
+    return x >= 0 && y >= 0 && x < this->frame_width_ && y < this->frame_height_;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -382,9 +444,33 @@ void LiveView::toggleHud()
     this->show_hud_ = !this->show_hud_;
 }
 
-void LiveView::toggleCrosshair()
+void LiveView::toggleReticles()
 {
-    this->show_crosshair_ = !this->show_crosshair_;
+    this->show_reticles_ = !this->show_reticles_;
+}
+
+bool LiveView::reticlesVisible() const
+{
+    return this->show_reticles_;
+}
+
+ReticleSet& LiveView::reticles()
+{
+    return this->reticles_;
+}
+
+bool LiveView::takeMousePressInFrame(int& x, int& y)
+{
+    SliderState& s = sliders();
+    if (!s.press_pending)
+        return false;
+    s.press_pending = false;
+    return this->windowToFrame(s.press_x, s.press_y, x, y);
+}
+
+bool LiveView::mouseHeld() const
+{
+    return sliders().button_held;
 }
 
 bool LiveView::stretchEnabled() const
@@ -412,6 +498,8 @@ void LiveView::drawHud(cv::Mat& image, const ModelState& state, const Overlay& o
                     "    seq " + std::to_string(state.sequence));
     lines.push_back(std::string("stretch ") + (this->options_.stretch ? "on " : "off") + "    " + overlay.bayer_note);
 
+    if (!overlay.reticle_text.empty())
+        lines.push_back(overlay.reticle_text);
     if (!overlay.probe_text.empty())
         lines.push_back(overlay.probe_text);
     if (!state.last_error.empty())
@@ -478,13 +566,48 @@ void LiveView::drawProgress(cv::Mat& image, const ModelState& state) const
                 cv::Scalar(230, 255, 230), 1, cv::LINE_AA);
 }
 
-void LiveView::drawCrosshair(cv::Mat& image) const
+void LiveView::drawReticles(cv::Mat& image) const
 {
-    const cv::Point centre(image.cols / 2, image.rows / 2);
-    const cv::Scalar colour(80, 255, 255);
-    cv::line(image, cv::Point(centre.x - 25, centre.y), cv::Point(centre.x + 25, centre.y), colour, 1);
-    cv::line(image, cv::Point(centre.x, centre.y - 25), cv::Point(centre.x, centre.y + 25), colour, 1);
-    cv::circle(image, centre, 40, colour, 1);
+    // Drawn into a canvas that has the SENSOR resolution, so the coordinates need no scaling and a mark stays on its
+    // photosite however the window is sized. highgui does the scaling when it displays.
+    for (std::size_t i = 0; i < this->reticles_.size(); ++i)
+    {
+        const Reticle& item = this->reticles_.at(i);
+        double cx = 0.0;
+        double cy = 0.0;
+        this->reticles_.resolvePosition(i, this->frame_width_, this->frame_height_, cx, cy);
+
+        const bool chosen = this->reticles_.hasSelection() && this->reticles_.selected() == i;
+        const cv::Scalar colour = chosen ? cv::Scalar(80, 255, 255) : cv::Scalar(60, 200, 200);
+        const int thickness = std::max(1, item.thickness);
+
+        const int fx = toFixed(cx);
+        const int fy = toFixed(cy);
+        const int arm = toFixed(item.arm);
+        const int gap = toFixed(item.gap);
+
+        // Four segments rather than two crossing lines: the central gap is the point of this shape, so that the
+        // photosite being marked is never covered by the mark.
+        cv::line(image, cv::Point(fx - arm, fy), cv::Point(fx - gap, fy), colour, thickness,
+                 cv::LINE_AA, kSubPixelShift);
+        cv::line(image, cv::Point(fx + gap, fy), cv::Point(fx + arm, fy), colour, thickness,
+                 cv::LINE_AA, kSubPixelShift);
+        cv::line(image, cv::Point(fx, fy - arm), cv::Point(fx, fy - gap), colour, thickness,
+                 cv::LINE_AA, kSubPixelShift);
+        cv::line(image, cv::Point(fx, fy + gap), cv::Point(fx, fy + arm), colour, thickness,
+                 cv::LINE_AA, kSubPixelShift);
+
+        for (double radius : item.circles)
+            cv::circle(image, cv::Point(fx, fy), toFixed(radius), colour, thickness, cv::LINE_AA, kSubPixelShift);
+
+        if (chosen)
+        {
+            // A small open square marks the selection, so it is obvious which reticle the keys are about to move.
+            const int handle = toFixed(item.gap + 4.0);
+            cv::rectangle(image, cv::Point(fx - handle, fy - handle), cv::Point(fx + handle, fy + handle),
+                          cv::Scalar(255, 255, 255), 1, cv::LINE_AA, kSubPixelShift);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

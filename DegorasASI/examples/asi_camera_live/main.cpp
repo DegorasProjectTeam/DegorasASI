@@ -32,12 +32,14 @@
 // uses. OpenCV appears here and nowhere else, and this example is built only when OpenCV is found -- see the
 // CMakeLists in this directory. With OpenCV absent the library still builds and its tests still pass.
 //
-// STRUCTURE: model, view, controller, in four pairs of files.
+// STRUCTURE: model, view, controller, in five pairs of files.
 //
 //   live_model      owns the camera and the ONLY thread that talks to it. Publishes frames and a state snapshot.
 //   live_view       owns the window. Runs on the main thread, because highgui insists. Draws what it is given.
-//   live_controller turns keys and slider movements into requests. Knows nothing about pixels or about the SDK.
+//   live_controller turns keys, clicks and slider movements into requests. Knows nothing about pixels or the SDK.
 //   live_image      Frame -> cv::Mat, demosaicing and the stretch. Pure; no camera, no window, no thread.
+//   live_reticle    the aiming marks: positions, geometry, hit-testing and their file. Free of OpenCV entirely, so
+//                   the multi-camera control software can take it as it stands.
 //   main            this file: arguments, wiring, and the loop that drives the view.
 //
 // WHY IT IS SPLIT THAT WAY, and it is not for tidiness. The previous version was one loop on the main thread: grab,
@@ -137,6 +139,7 @@ struct Options
     int snap;                  ///< >0: grab this many frames, write the last one, exit. No window.
     std::string snap_name;
     std::string format;
+    std::string reticles;
 };
 
 Options::Options() :
@@ -149,7 +152,8 @@ Options::Options() :
     stretch(false),
     snap(0),
     snap_name("live_snap"),
-    format("RGB24")
+    format("RGB24"),
+    reticles("live_reticles.txt")
 {
 }
 
@@ -169,6 +173,8 @@ void printUsage()
         "  --no-stretch    start with it off\n"
         "  --snap N        headless: grab N frames (so exposure settles), write the last one, exit\n"
         "  --snap-name S   base name for the --snap output (default live_snap)\n"
+        "  --reticles P    reticle file, read at start and written at exit (default live_reticles.txt).\n"
+        "                  Pass \"none\" to keep the reticles in memory only\n"
         "\n";
 }
 
@@ -190,6 +196,7 @@ bool parseArgs(int argc, char** argv, Options& opt)
         else if (arg == "--no-stretch")                { opt.stretch_set = true; opt.stretch = false; }
         else if (arg == "--format" && i + 1 < argc)    { opt.format = argv[++i]; }
         else if (arg == "--snap-name" && i + 1 < argc) { opt.snap_name = argv[++i]; }
+        else if (arg == "--reticles" && i + 1 < argc)  { opt.reticles = argv[++i]; }
         else
         {
             std::cout << "Unknown argument: " << arg << "\n\n";
@@ -227,8 +234,8 @@ std::string bayerNote(const types::CameraDescriptor& desc, const types::Frame& f
 
 /// Headless capture: no window, no keyboard. Exists so the example can be exercised without a human, and it is also
 /// how the demosaic mapping is verified -- capture the same scene as RGB24 and as demosaiced RAW and compare means.
-int runSnapshot(live::LiveModel& model, const types::CameraDescriptor& desc, const Options& opt,
-                const live::DisplayOptions& display_opts)
+int runSnapshot(live::LiveModel& model, live::LiveView& view, live::LiveController& controller,
+                const types::CameraDescriptor& desc, const Options& opt)
 {
     types::Frame frame;
     cv::Mat display;
@@ -253,22 +260,31 @@ int runSnapshot(live::LiveModel& model, const types::CameraDescriptor& desc, con
         return 1;
 
     const int bayer = desc.is_colour ? live::bayerCodeFor(desc.bayer_pattern, frame) : -1;
-    live::buildDisplay(frame, display_opts, bayer, display);
+    live::buildDisplay(frame, view.displayOptions(), bayer, display);
 
     const std::string png = opt.snap_name + ".png";
     const std::string raw = opt.snap_name + "." + imgio::extensionFor(frame.format);
     const bool png_ok = cv::imwrite(png, display);
     const bool raw_ok = imgio::writeFrame(frame, raw);
 
+    // A third file: the frame with everything the viewfinder would draw on it. It costs one composition and it is the
+    // only way to check the HUD, the reticles and the progress bar without a person watching a screen.
+    live::Overlay overlay;
+    overlay.bayer_note = bayerNote(desc, frame, bayer, view.displayOptions().demosaic);
+    overlay.reticle_text = controller.selectedReticleText();
+    const std::string view_png = opt.snap_name + "_view.png";
+    const bool view_ok = cv::imwrite(view_png, view.compose(display, model.state(), overlay));
+
     // The means are the point of this mode: an RGB24 capture and a demosaiced RAW capture of the same scene must
     // agree on which channel is which. If the Bayer code were wrong, B and R would swap.
     const cv::Scalar mean = cv::mean(display);
     std::cout << "snap: " << frame.width << "x" << frame.height << " " << types::toString(frame.format)
               << "  mean B=" << fixed1(mean[0]) << " G=" << fixed1(mean[1]) << " R=" << fixed1(mean[2])
-              << "  " << bayerNote(desc, frame, bayer, display_opts.demosaic) << "\n";
+              << "  " << bayerNote(desc, frame, bayer, view.displayOptions().demosaic) << "\n";
     std::cout << "  " << (png_ok ? png : std::string("PNG WRITE FAILED"))
-              << "  " << (raw_ok ? raw : std::string("RAW WRITE FAILED")) << "\n";
-    return (png_ok && raw_ok) ? 0 : 1;
+              << "  " << (raw_ok ? raw : std::string("RAW WRITE FAILED"))
+              << "  " << (view_ok ? view_png : std::string("VIEW WRITE FAILED")) << "\n";
+    return (png_ok && raw_ok && view_ok) ? 0 : 1;
 }
 
 }   // namespace
@@ -368,23 +384,34 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    live::DisplayOptions initial_options;
-    initial_options.demosaic = opt.demosaic;
-    initial_options.stretch  = opt.stretch_set ? opt.stretch : (format == types::ImageFormat::RAW16);
+    // -- View and controller -------------------------------------------------------------------------------------------
+    // Both exist before the headless branch, because a snapshot composes the same overlay the window would show. The
+    // WINDOW, on the other hand, is only opened for the interactive path.
+    live::LiveView view(kWindowTitle, live_format.width, live_format.height);
+    view.displayOptions().demosaic = opt.demosaic;
+    view.displayOptions().stretch  = opt.stretch_set ? opt.stretch : (format == types::ImageFormat::RAW16);
+
+    live::LiveController controller(model, view);
+
+    // Loaded before the first frame, so a saved calibration is on screen from the outset rather than appearing a
+    // moment later. "none" is spelled out because an empty argument is awkward to pass through a shell.
+    if (opt.reticles != "none")
+    {
+        controller.setReticleFile(opt.reticles);
+        if (controller.loadReticles())
+            std::cout << "reticles loaded from " << opt.reticles << "\n";
+    }
 
     // -- Headless ------------------------------------------------------------------------------------------------------
     if (opt.snap > 0)
     {
-        const int result = runSnapshot(model, desc, opt, initial_options);
+        const int result = runSnapshot(model, view, controller, desc, opt);
         model.stop();
         camera.doDisconnect();
         return result;
     }
 
-    // -- View and controller -------------------------------------------------------------------------------------------
-    live::LiveView view(kWindowTitle, live_format.width, live_format.height);
     view.open(kMaxWindowWidth, kMaxWindowHeight);
-    view.displayOptions() = initial_options;
 
     long long exposure_min = 0;
     long long exposure_max = 0;
@@ -395,7 +422,6 @@ int main(int argc, char** argv)
     if (model.gainMaximum(gain_max))
         view.addGainSlider(gain_max, model.state().gain);
 
-    live::LiveController controller(model, view);
     std::cout << "\n";
     controller.printKeys();
     std::cout << "\n";
@@ -439,14 +465,23 @@ int main(int argc, char** argv)
                                  ? live::describePixel(frame, probe_x, probe_y)
                                  : std::string();
 
+        overlay.reticle_text = controller.selectedReticleText();
+
         view.render(display, state, overlay);
 
         controller.pumpSliders();
+        controller.pumpMouse();
         if (!controller.handleKey(view.pollKey(kUiPeriodMs), frame, display))
             break;
     }
 
     // -- Teardown ------------------------------------------------------------------------------------------------------
+    // Saved unconditionally rather than on a key: a fine adjustment nobody remembered to save is an adjustment that
+    // has to be done again, and rewriting the file with what is on screen is what the user was looking at.
+    if (opt.reticles != "none" && view.reticles().size() > 0)
+        std::cout << (controller.saveReticles() ? ("reticles saved to " + opt.reticles)
+                                               : std::string("reticles could NOT be saved")) << "\n";
+
     model.stop();
     camera.doDisconnect();
 

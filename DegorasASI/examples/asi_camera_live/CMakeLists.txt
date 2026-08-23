@@ -41,7 +41,8 @@ add_executable(Example_asi_camera_live
     live_image.cpp
     live_model.cpp
     live_view.cpp
-    live_controller.cpp)
+    live_controller.cpp
+    live_reticle.cpp)
 
 target_link_libraries(Example_asi_camera_live PRIVATE
     DegorasASI
