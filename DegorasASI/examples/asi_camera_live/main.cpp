@@ -141,6 +141,8 @@ struct Options
     std::string format;
     std::string reticles;
     double zoom;
+    std::string flip;
+    int rotate;
 };
 
 Options::Options() :
@@ -155,7 +157,9 @@ Options::Options() :
     snap_name("live_snap"),
     format("RGB24"),
     reticles("live_reticles.txt"),
-    zoom(1.0)
+    zoom(1.0),
+    flip(),
+    rotate(0)
 {
 }
 
@@ -178,6 +182,8 @@ void printUsage()
         "  --reticles P    reticle file, read at start and written at exit (default live_reticles.txt).\n"
         "                  Pass \"none\" to keep the reticles in memory only\n"
         "  --zoom F        start magnified F times on the frame centre (default 1, the whole frame)\n"
+        "  --flip WHICH    flip the display: h, v or hv (default none)\n"
+        "  --rotate DEG    rotate the display: 0, 90, 180 or 270 clockwise (default 0)\n"
         "\n";
 }
 
@@ -201,6 +207,8 @@ bool parseArgs(int argc, char** argv, Options& opt)
         else if (arg == "--snap-name" && i + 1 < argc) { opt.snap_name = argv[++i]; }
         else if (arg == "--reticles" && i + 1 < argc)  { opt.reticles = argv[++i]; }
         else if (arg == "--zoom" && i + 1 < argc)      { opt.zoom = std::atof(argv[++i]); }
+        else if (arg == "--flip" && i + 1 < argc)      { opt.flip = argv[++i]; }
+        else if (arg == "--rotate" && i + 1 < argc)    { if (!next(opt.rotate)) return false; }
         else
         {
             std::cout << "Unknown argument: " << arg << "\n\n";
@@ -403,10 +411,23 @@ int main(int argc, char** argv)
     view.displayOptions().demosaic = opt.demosaic;
     view.displayOptions().stretch  = opt.stretch_set ? opt.stretch : (format == types::ImageFormat::RAW16);
 
-    // Applied before the headless branch, so a snapshot can be taken magnified too -- which is how the reticles were
-    // checked against the zoom without a person driving the wheel.
+    // Applied before the headless branch, so a snapshot can be taken magnified, flipped or turned -- which is how the
+    // reticles were checked against all of it without a person driving the wheel.
     if (opt.zoom > 1.0)
         view.zoomBy(opt.zoom, live_format.width / 2.0, live_format.height / 2.0);
+
+    if (!opt.flip.empty() || opt.rotate != 0)
+    {
+        const bool flip_h = (opt.flip.find('h') != std::string::npos);
+        const bool flip_v = (opt.flip.find('v') != std::string::npos);
+        if (!opt.flip.empty() && !flip_h && !flip_v)
+            std::cout << "  --flip not understood, expected h, v or hv: " << opt.flip << "\n";
+        // Degrees in, quarter turns stored: anything that is not a multiple of ninety would have to resample, and a
+        // magnified star that has been resampled is no longer evidence about focus.
+        if (opt.rotate % 90 != 0)
+            std::cout << "  --rotate is not a multiple of 90, rounding down: " << opt.rotate << "\n";
+        view.setOrientation(flip_h, flip_v, opt.rotate / 90);
+    }
 
     live::LiveController controller(model, view);
 

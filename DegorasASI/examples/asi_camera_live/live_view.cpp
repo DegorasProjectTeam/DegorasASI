@@ -76,6 +76,11 @@ struct SliderState
     int right_last_y = -1;
     int right_dx = 0;            ///< Accumulated right-drag movement not yet consumed.
     int right_dy = 0;
+    int right_travel = 0;        ///< How far the pointer moved while the right button was down, to tell click
+                                 ///< from drag: a click opens the menu, a drag pans.
+    bool right_click_pending = false;   ///< A right CLICK not yet consumed.
+    int right_click_x = -1;
+    int right_click_y = -1;
     long long exposure_min = 1;
     long long exposure_max = 1;
 };
@@ -88,6 +93,17 @@ SliderState& sliders()
 
 /// Resolution of the logarithmic exposure slider. Fine enough that a step is imperceptible across the whole range.
 constexpr int kExposureSteps = 1000;
+
+/// How far the pointer may travel with the right button down and still count as a click rather than a pan.
+constexpr int kRightClickSlop = 4;
+
+// The context menu, drawn by hand because highgui has none: it offers a window, trackbars and a mouse callback, and
+// that is the whole toolkit. So the menu is a rectangle painted onto the image and a click compared against it.
+constexpr int kMenuItemHeight = 20;
+constexpr int kMenuSeparatorHeight = 9;
+constexpr int kMenuPadX = 12;
+constexpr int kMenuPadY = 5;
+constexpr double kMenuFontScale = 0.44;
 
 /// Shortest gap between two compositions. 20 Hz is smooth for a progress bar and cheap; the input rate is separate.
 constexpr double kRenderPeriodMs = 50.0;
@@ -173,10 +189,17 @@ void onMouse(int event, int x, int y, int flags, void*)
         s.right_held = true;
         s.right_last_x = x;
         s.right_last_y = y;
+        s.right_travel = 0;
     }
     else if (event == cv::EVENT_RBUTTONUP)
     {
         s.right_held = false;
+        if (s.right_travel <= kRightClickSlop)
+        {
+            s.right_click_pending = true;
+            s.right_click_x = x;
+            s.right_click_y = y;
+        }
     }
     else if (event == cv::EVENT_MOUSEWHEEL)
     {
@@ -188,8 +211,12 @@ void onMouse(int event, int x, int y, int flags, void*)
 
     if (s.right_held && event == cv::EVENT_MOUSEMOVE)
     {
-        s.right_dx += x - s.right_last_x;
-        s.right_dy += y - s.right_last_y;
+        const int step_x = x - s.right_last_x;
+        const int step_y = y - s.right_last_y;
+        s.right_dx += step_x;
+        s.right_dy += step_y;
+        // Total distance travelled, not net displacement: a pan that returns to where it started is still a pan.
+        s.right_travel += std::abs(step_x) + std::abs(step_y);
         s.right_last_x = x;
         s.right_last_y = y;
     }
@@ -230,6 +257,19 @@ LiveView::LiveView(const std::string& title, int frame_width, int frame_height) 
     show_reticles_(true),
     reticles_(),
     canvas_(),
+    raw_(),
+    flip_h_(false),
+    flip_v_(false),
+    rotation_(0),
+    menu_open_(false),
+    menu_x_(0),
+    menu_y_(0),
+    menu_frame_x_(0),
+    menu_frame_y_(0),
+    menu_anchor_valid_(false),
+    menu_items_(),
+    menu_highlight_(-1),
+    menu_choice_(-1),
     zoom_(1.0),
     centre_x_(frame_width / 2.0),
     centre_y_(frame_height / 2.0),
@@ -262,7 +302,15 @@ bool LiveView::open(int max_width, int max_height)
 {
     // WINDOW_NORMAL so it can be resized and the frame scaled to fit; WINDOW_AUTOSIZE would open a sensor-sized
     // window, which runs off the screen on a large sensor.
-    cv::namedWindow(this->title_, cv::WINDOW_NORMAL | cv::WINDOW_KEEPRATIO);
+    //
+    // WINDOW_GUI_NORMAL matters more than it looks. With the default expanded GUI, the Qt backend builds its own
+    // toolbar AND its own right-click menu, and that menu SWALLOWS THE RIGHT BUTTON: our callback never sees it, so
+    // neither the context menu nor the right-drag pan could work. In OpenCV 4.12's window_QT.cpp the actions behind
+    // that menu are created only for CV_GUI_EXPANDED (window_QT.cpp:1717) and the menu is shown only when that action
+    // list is non-empty (window_QT.cpp:2801), so asking for the plain GUI hands the button back to us. What is given
+    // up is Qt's own toolbar and status bar, neither of which this example uses -- it has its own HUD -- and Qt's own
+    // zoom and pan, which fought with ours anyway.
+    cv::namedWindow(this->title_, cv::WINDOW_NORMAL | cv::WINDOW_KEEPRATIO | cv::WINDOW_GUI_NORMAL);
     cv::resizeWindow(this->title_, std::min(this->frame_width_, max_width),
                      std::min(this->frame_height_, max_height));
     cv::setMouseCallback(this->title_, onMouse, nullptr);
@@ -341,16 +389,20 @@ const cv::Mat& LiveView::compose(const cv::Mat& image, const ModelState& state, 
     this->geometry_ = geometry;
     this->clampView();
 
-    // The canvas is always frame-sized, whatever the zoom. So the visible CROP is enlarged into it and the overlay is
-    // then drawn at canvas resolution, which keeps a reticle one pixel wide at any magnification -- draw first and
-    // enlarge afterwards and a 32x zoom would give it a 32-pixel line.
-    this->canvas_.create(this->frame_height_, this->frame_width_, CV_8UC3);
+    // The picture is built in three steps and the ORDER is the whole design. First the visible crop is enlarged into
+    // a frame-sized canvas, so a reticle stays one pixel wide at any magnification -- draw first and enlarge
+    // afterwards and a 32x zoom would give it a 32-pixel line. Then the flip and the rotation are applied to that
+    // canvas, which is exact because they are quarter turns and mirrors. Only then is the overlay drawn, on top of
+    // the oriented picture, so the HUD is never upside down and a click can be mapped straight back.
+    const bool oriented = this->isOriented();
+    cv::Mat& picture = oriented ? this->raw_ : this->canvas_;
+    picture.create(this->frame_height_, this->frame_width_, CV_8UC3);
 
     if (image.empty())
     {
         // Before the first frame there is nothing to show, but the window must still exist and the progress bar must
         // still move, so a flat canvas stands in.
-        this->canvas_.setTo(cv::Scalar(20, 20, 20));
+        picture.setTo(cv::Scalar(20, 20, 20));
     }
     else
     {
@@ -359,15 +411,22 @@ const cv::Mat& LiveView::compose(const cv::Mat& image, const ModelState& state, 
         {
             // Copied, not drawn on: the caller keeps showing the same image while no new frame arrives, and drawing
             // the overlay onto it would accumulate a new HUD on top of the old one every iteration.
-            image.copyTo(this->canvas_);
+            image.copyTo(picture);
         }
         else
         {
             // INTER_NEAREST on purpose. Magnifying a star field with a smooth filter invents structure that is not in
             // the data; a hard square per photosite is what somebody judging focus needs to see.
-            cv::resize(image(visible), this->canvas_, this->canvas_.size(), 0.0, 0.0, cv::INTER_NEAREST);
+            cv::resize(image(visible), picture, picture.size(), 0.0, 0.0, cv::INTER_NEAREST);
         }
     }
+
+    if (oriented)
+        this->applyOrientation(this->raw_, this->canvas_);
+
+    // The highlight follows the pointer, so the menu behaves like a menu.
+    if (this->menu_open_)
+        this->menu_highlight_ = this->menuHitTest(sliders().mouse_x, sliders().mouse_y);
 
     if (this->show_hud_)
         this->drawHud(this->canvas_, state, overlay);
@@ -375,6 +434,8 @@ const cv::Mat& LiveView::compose(const cv::Mat& image, const ModelState& state, 
         this->drawReticles(this->canvas_);
     if (state.progress_is_useful)
         this->drawProgress(this->canvas_, state);
+    if (this->menu_open_)
+        this->drawMenu(this->canvas_);
 
     return this->canvas_;
 }
@@ -453,7 +514,7 @@ bool LiveView::probePointInFrame(int& x, int& y) const
     const SliderState& s = sliders();
     if (s.mouse_x < 0 || s.mouse_y < 0)
         return false;
-    return this->windowToFrame(s.mouse_x, s.mouse_y, x, y);
+    return this->canvasToFrame(s.mouse_x, s.mouse_y, x, y);
 }
 
 cv::Rect LiveView::visibleRegion() const
@@ -493,10 +554,16 @@ void LiveView::zoomBy(double factor, double anchor_x, double anchor_y)
 
 void LiveView::panBy(double dx_canvas, double dy_canvas)
 {
+    // The drag is measured on the SCREEN, and the pan happens in frame coordinates, so a flip or a rotation between
+    // the two has to be undone or the image would run away from the pointer instead of following it.
+    double dx = 0.0;
+    double dy = 0.0;
+    this->unorientDelta(dx_canvas, dy_canvas, dx, dy);
+
     // Canvas pixels are not frame pixels once magnified, so the movement is divided by the zoom: dragging by a
     // centimetre moves the image by a centimetre whatever the magnification.
-    this->centre_x_ -= dx_canvas / this->zoom_;
-    this->centre_y_ -= dy_canvas / this->zoom_;
+    this->centre_x_ -= dx / this->zoom_;
+    this->centre_y_ -= dy / this->zoom_;
     this->clampView();
 }
 
@@ -505,6 +572,153 @@ void LiveView::resetView()
     this->zoom_ = 1.0;
     this->centre_x_ = this->frame_width_ / 2.0;
     this->centre_y_ = this->frame_height_ / 2.0;
+}
+
+void LiveView::toggleFlipHorizontal()
+{
+    this->flip_h_ = !this->flip_h_;
+}
+
+void LiveView::toggleFlipVertical()
+{
+    this->flip_v_ = !this->flip_v_;
+}
+
+void LiveView::cycleFlip()
+{
+    if (!this->flip_h_ && !this->flip_v_)
+    {
+        this->flip_h_ = true;
+    }
+    else if (this->flip_h_ && !this->flip_v_)
+    {
+        this->flip_h_ = false;
+        this->flip_v_ = true;
+    }
+    else if (!this->flip_h_ && this->flip_v_)
+    {
+        this->flip_h_ = true;
+    }
+    else
+    {
+        this->flip_h_ = false;
+        this->flip_v_ = false;
+    }
+}
+
+void LiveView::rotateBy(int quarters)
+{
+    // Positive modulo, so turning anticlockwise from zero lands on three rather than on minus one.
+    this->rotation_ = ((this->rotation_ + quarters) % 4 + 4) % 4;
+}
+
+void LiveView::setOrientation(bool flip_horizontal, bool flip_vertical, int quarters)
+{
+    this->flip_h_ = flip_horizontal;
+    this->flip_v_ = flip_vertical;
+    this->rotation_ = ((quarters % 4) + 4) % 4;
+}
+
+std::string LiveView::orientationText() const
+{
+    std::string text;
+    if (this->flip_h_)
+        text += "flipH";
+    if (this->flip_v_)
+        text += text.empty() ? "flipV" : "+flipV";
+    if (this->rotation_ != 0)
+    {
+        const std::string turn = "rot" + std::to_string(this->rotation_ * 90);
+        text += text.empty() ? turn : ("+" + turn);
+    }
+    return text;
+}
+
+bool LiveView::isOriented() const
+{
+    return this->flip_h_ || this->flip_v_ || this->rotation_ != 0;
+}
+
+void LiveView::applyOrientation(const cv::Mat& source, cv::Mat& target) const
+{
+    // Flip first, then rotate. orientPoint() composes them in the same order, and these are the only two places
+    // either operation appears, which is what keeps the picture and the marks drawn on it from drifting apart.
+    const int flip_code = (this->flip_h_ && this->flip_v_) ? -1 : (this->flip_h_ ? 1 : 0);
+
+    if (this->rotation_ == 0)
+    {
+        if (this->flip_h_ || this->flip_v_)
+            cv::flip(source, target, flip_code);
+        else
+            source.copyTo(target);
+        return;
+    }
+
+    cv::Mat flipped;
+    if (this->flip_h_ || this->flip_v_)
+        cv::flip(source, flipped, flip_code);
+    else
+        flipped = source;
+
+    // Quarter turns, so cv::rotate does it by transposing and flipping: no interpolation, no invented pixels.
+    const int code = (this->rotation_ == 1) ? cv::ROTATE_90_CLOCKWISE
+                                            : ((this->rotation_ == 2) ? cv::ROTATE_180
+                                                                      : cv::ROTATE_90_COUNTERCLOCKWISE);
+    cv::rotate(flipped, target, code);
+}
+
+void LiveView::orientPoint(double u, double v, double& x, double& y) const
+{
+    // Mirrors are about the far EDGE of the last pixel, matching cv::flip: a point at column 0 lands on the last
+    // column, so a mark drawn at a photosite stays on that photosite after the flip.
+    const double w = this->frame_width_ - 1.0;
+    const double h = this->frame_height_ - 1.0;
+    const double fu = this->flip_h_ ? (w - u) : u;
+    const double fv = this->flip_v_ ? (h - v) : v;
+
+    switch (this->rotation_)
+    {
+        case 1:  x = h - fv;  y = fu;      break;
+        case 2:  x = w - fu;  y = h - fv;  break;
+        case 3:  x = fv;      y = w - fu;  break;
+        default: x = fu;      y = fv;      break;
+    }
+}
+
+void LiveView::unorientPoint(double x, double y, double& u, double& v) const
+{
+    const double w = this->frame_width_ - 1.0;
+    const double h = this->frame_height_ - 1.0;
+
+    double fu = 0.0;
+    double fv = 0.0;
+    switch (this->rotation_)
+    {
+        case 1:  fu = y;      fv = h - x;  break;
+        case 2:  fu = w - x;  fv = h - y;  break;
+        case 3:  fu = w - y;  fv = x;      break;
+        default: fu = x;      fv = y;      break;
+    }
+
+    u = this->flip_h_ ? (w - fu) : fu;
+    v = this->flip_v_ ? (h - fv) : fv;
+}
+
+void LiveView::unorientDelta(double dx, double dy, double& du, double& dv) const
+{
+    // A direction, not a position, so the mirror offsets drop out and only the signs and the axis swap remain.
+    double fu = 0.0;
+    double fv = 0.0;
+    switch (this->rotation_)
+    {
+        case 1:  fu = dy;   fv = -dx;  break;
+        case 2:  fu = -dx;  fv = -dy;  break;
+        case 3:  fu = -dy;  fv = dx;   break;
+        default: fu = dx;   fv = dy;   break;
+    }
+
+    du = this->flip_h_ ? -fu : fu;
+    dv = this->flip_v_ ? -fv : fv;
 }
 
 const FrameGeometry& LiveView::geometry() const
@@ -539,35 +753,131 @@ bool LiveView::takeRightDrag(int& dx, int& dy)
     return true;
 }
 
-bool LiveView::windowToFrame(int window_x, int window_y, int& x, int& y) const
+bool LiveView::takeRightClick(int& canvas_x, int& canvas_y)
 {
-    if (!this->open_)
+    SliderState& s = sliders();
+    if (!s.right_click_pending)
         return false;
+    s.right_click_pending = false;
+    canvas_x = s.right_click_x;
+    canvas_y = s.right_click_y;
+    return true;
+}
 
-    // Window pixels are not frame pixels: with WINDOW_NORMAL the image is scaled to whatever size the window was
-    // dragged to. Every position arriving from highgui goes through here, so a click and the pixel probe agree, and a
-    // reticle lands on the photosite that was actually clicked.
-    cv::Rect visible;
-    try
-    {
-        visible = cv::getWindowImageRect(this->title_);
-    }
-    catch (const cv::Exception&)
-    {
-        return false;
-    }
-    if (visible.width <= 0 || visible.height <= 0)
-        return false;
+void LiveView::openMenu(int canvas_x, int canvas_y, const std::vector<std::string>& items)
+{
+    this->menu_items_ = items;
+    this->menu_choice_ = -1;
+    this->menu_highlight_ = -1;
+    this->menu_anchor_valid_ = this->canvasToFrame(canvas_x, canvas_y, this->menu_frame_x_, this->menu_frame_y_);
+    this->menu_open_ = !this->menu_items_.empty();
 
-    // Two steps, not one. Window -> CANVAS, because the window is scaled to whatever size it was dragged to; then
-    // canvas -> FRAME, because the canvas holds a magnified crop rather than the whole frame. Collapsing these into
-    // one factor is exactly the bug that makes a click land somewhere else as soon as the zoom is not 1.
-    const double canvas_x = static_cast<double>(window_x) * this->frame_width_ / visible.width;
-    const double canvas_y = static_cast<double>(window_y) * this->frame_height_ / visible.height;
+    // Kept inside the picture, so a click near the right or the bottom edge does not open a menu half off-screen
+    // where its own items cannot be reached.
+    this->menu_x_ = canvas_x;
+    this->menu_y_ = canvas_y;
+    const cv::Rect box = this->menuRect();
+    const int width = (this->canvas_.cols > 0) ? this->canvas_.cols : this->frame_width_;
+    const int height = (this->canvas_.rows > 0) ? this->canvas_.rows : this->frame_height_;
+    this->menu_x_ = std::clamp(this->menu_x_, 0, std::max(0, width - box.width));
+    this->menu_y_ = std::clamp(this->menu_y_, 0, std::max(0, height - box.height));
+}
+
+bool LiveView::menuOpen() const
+{
+    return this->menu_open_;
+}
+
+void LiveView::closeMenu()
+{
+    this->menu_open_ = false;
+    this->menu_highlight_ = -1;
+}
+
+bool LiveView::takeMenuChoice(int& index)
+{
+    if (this->menu_choice_ < 0)
+        return false;
+    index = this->menu_choice_;
+    this->menu_choice_ = -1;
+    return true;
+}
+
+bool LiveView::menuAnchorInFrame(int& x, int& y) const
+{
+    if (!this->menu_anchor_valid_)
+        return false;
+    x = this->menu_frame_x_;
+    y = this->menu_frame_y_;
+    return true;
+}
+
+cv::Rect LiveView::menuRect() const
+{
+    if (this->menu_items_.empty())
+        return cv::Rect();
+
+    int width = 0;
+    int height = 2 * kMenuPadY;
+    for (const std::string& item : this->menu_items_)
+    {
+        if (item == "-")
+        {
+            height += kMenuSeparatorHeight;
+            continue;
+        }
+        int base = 0;
+        const cv::Size size = cv::getTextSize(item, cv::FONT_HERSHEY_SIMPLEX, kMenuFontScale, 1, &base);
+        width = std::max(width, size.width);
+        height += kMenuItemHeight;
+    }
+    return cv::Rect(this->menu_x_, this->menu_y_, width + 2 * kMenuPadX, height);
+}
+
+int LiveView::menuHitTest(int canvas_x, int canvas_y) const
+{
+    if (!this->menu_open_)
+        return -1;
+
+    const cv::Rect box = this->menuRect();
+    if (!box.contains(cv::Point(canvas_x, canvas_y)))
+        return -1;
+
+    int y = box.y + kMenuPadY;
+    for (std::size_t i = 0; i < this->menu_items_.size(); ++i)
+    {
+        const bool separator = (this->menu_items_[i] == "-");
+        const int item_height = separator ? kMenuSeparatorHeight : kMenuItemHeight;
+        if (canvas_y >= y && canvas_y < y + item_height)
+            return separator ? -1 : static_cast<int>(i);
+        y += item_height;
+    }
+    return -1;
+}
+
+bool LiveView::canvasToFrame(int canvas_x, int canvas_y, int& x, int& y) const
+{
+    // highgui hands back positions in IMAGE coordinates -- the pixel of the Mat that was passed to imshow, not the
+    // pixel of the window -- and it has already divided out whatever scale the window was dragged to. This used to
+    // divide by that scale a SECOND time, using getWindowImageRect(), which put every click at a fraction of its
+    // real distance from the top-left corner: with the window at twice the frame, a click landed at half the
+    // intended position, and a reticle placed by clicking appeared visibly away from the pointer.
+    //
+    // Measured rather than assumed. A probe that moved the cursor itself to known client-area points, with the window
+    // opened at twice the image size, reported client x=320 as 160 and client x=640 as 320: image coordinates, exact.
+    //
+    // So there are two links left, and both belong to this view: undo the flip and the rotation, then undo the zoom
+    // and the pan. No highgui call is involved any more, which is also what lets the headless snapshot mode use it.
+    double u = 0.0;
+    double v = 0.0;
+    this->unorientPoint(canvas_x, canvas_y, u, v);
 
     const cv::Rect region = this->visibleRegion();
-    x = static_cast<int>(region.x + canvas_x * region.width / this->frame_width_);
-    y = static_cast<int>(region.y + canvas_y * region.height / this->frame_height_);
+    if (region.width <= 0 || region.height <= 0)
+        return false;
+
+    x = static_cast<int>(std::floor(region.x + u * region.width / this->frame_width_));
+    y = static_cast<int>(std::floor(region.y + v * region.height / this->frame_height_));
     return x >= 0 && y >= 0 && x < this->frame_width_ && y < this->frame_height_;
 }
 
@@ -614,7 +924,20 @@ bool LiveView::takeMousePressInFrame(int& x, int& y)
     if (!s.press_pending)
         return false;
     s.press_pending = false;
-    return this->windowToFrame(s.press_x, s.press_y, x, y);
+
+    // A press on the open menu is a choice, not a click on the picture, and a press anywhere else dismisses the menu
+    // without also doing whatever that place would normally do. Both are handled here because this is the one place
+    // a press is consumed, so there is no way for a second reader to see it as well.
+    if (this->menu_open_)
+    {
+        const int hit = this->menuHitTest(s.press_x, s.press_y);
+        if (hit >= 0)
+            this->menu_choice_ = hit;
+        this->closeMenu();
+        return false;
+    }
+
+    return this->canvasToFrame(s.press_x, s.press_y, x, y);
 }
 
 bool LiveView::mouseHeld() const
@@ -655,6 +978,9 @@ void LiveView::drawHud(cv::Mat& image, const ModelState& state, const Overlay& o
     }
     if (this->geometry_.bin > 1)
         third += "    bin" + std::to_string(this->geometry_.bin);
+    const std::string orientation = this->orientationText();
+    if (!orientation.empty())
+        third += "    " + orientation;
     lines.push_back(third);
 
     if (!overlay.reticle_text.empty())
@@ -728,8 +1054,9 @@ void LiveView::drawProgress(cv::Mat& image, const ModelState& state) const
 void LiveView::drawReticles(cv::Mat& image) const
 {
     // THE COORDINATE CHAIN, and the reason a reticle survives everything: it is stored against the SENSOR, converted
-    // to the current FRAME through the ROI and the binning, and then to the CANVAS through the zoom and the pan. Any
-    // of those three can change without the mark moving on the sky.
+    // to the current FRAME through the ROI and the binning, then to the CANVAS through the zoom and the pan, and
+    // finally through the flip and the rotation to where it ends up on screen. Any of those can change without the
+    // mark moving on the sky.
     const cv::Rect region = this->visibleRegion();
     if (region.width <= 0 || region.height <= 0)
         return;
@@ -737,6 +1064,9 @@ void LiveView::drawReticles(cv::Mat& image) const
     const double canvas_per_frame_x = static_cast<double>(this->frame_width_) / region.width;
     const double canvas_per_frame_y = static_cast<double>(this->frame_height_) / region.height;
     const double size_scale = sensorToFrameScale(this->geometry_) * canvas_per_frame_x;
+
+    const int last_column = toFixed(image.cols - 1.0);
+    const int last_row = toFixed(image.rows - 1.0);
 
     for (std::size_t i = 0; i < this->reticles_.size(); ++i)
     {
@@ -749,46 +1079,98 @@ void LiveView::drawReticles(cv::Mat& image) const
         double frame_y = 0.0;
         sensorToFrame(this->geometry_, sensor_x, sensor_y, frame_x, frame_y);
 
-        const double cx = (frame_x - region.x) * canvas_per_frame_x;
-        const double cy = (frame_y - region.y) * canvas_per_frame_y;
+        double cx = 0.0;
+        double cy = 0.0;
+        this->orientPoint((frame_x - region.x) * canvas_per_frame_x, (frame_y - region.y) * canvas_per_frame_y,
+                          cx, cy);
 
-        // Outside the visible region there is nothing to draw. Cheap, and it keeps a mark that is off-screen from
-        // painting a stray line along the edge once the arm is long.
-        if (cx < -item.arm * size_scale || cy < -item.arm * size_scale ||
-            cx > image.cols + item.arm * size_scale || cy > image.rows + item.arm * size_scale)
+        // The crosshair is drawn in the ORIENTED canvas and spans it edge to edge, which is why the rotation needs no
+        // special case here: a full-width line and a full-height line are the same pair whichever way round the
+        // picture is. Each half is drawn only when its line crosses the picture at all, so a mark panned off to one
+        // side still shows the row it sits on -- and that is deliberate, because that stripe is the information that
+        // the mark is out there at that height.
+        const bool row_crosses = (cy >= 0.0) && (cy <= image.rows - 1.0);
+        const bool column_crosses = (cx >= 0.0) && (cx <= image.cols - 1.0);
+        if (!row_crosses && !column_crosses && item.circles.empty())
             continue;
 
         const bool chosen = this->reticles_.hasSelection() && this->reticles_.selected() == i;
-        const cv::Scalar colour = chosen ? cv::Scalar(80, 255, 255) : cv::Scalar(60, 200, 200);
+        // The reticle's OWN colour, always: it is a setting, so the selection must not override it. Which one is
+        // selected is shown by the handle below instead.
+        const cv::Scalar colour(item.blue, item.green, item.red);
         const int thickness = std::max(1, item.thickness);
 
         const int fx = toFixed(cx);
         const int fy = toFixed(cy);
-        const int arm = toFixed(item.arm * size_scale);
         const int gap = toFixed(item.gap * size_scale);
 
-        // Four segments rather than two crossing lines: the central gap is the point of this shape, so that the
-        // photosite being marked is never covered by the mark.
-        cv::line(image, cv::Point(fx - arm, fy), cv::Point(fx - gap, fy), colour, thickness,
-                 cv::LINE_AA, kSubPixelShift);
-        cv::line(image, cv::Point(fx + gap, fy), cv::Point(fx + arm, fy), colour, thickness,
-                 cv::LINE_AA, kSubPixelShift);
-        cv::line(image, cv::Point(fx, fy - arm), cv::Point(fx, fy - gap), colour, thickness,
-                 cv::LINE_AA, kSubPixelShift);
-        cv::line(image, cv::Point(fx, fy + gap), cv::Point(fx, fy + arm), colour, thickness,
-                 cv::LINE_AA, kSubPixelShift);
+        // Four segments rather than two crossing lines: the central gap is the point of this shape, so the photosite
+        // being marked is never covered by the mark. Where the centre lies outside the picture the near segment
+        // simply collapses and the far one spans the whole edge, which is what clipping gives for free.
+        if (row_crosses)
+        {
+            cv::line(image, cv::Point(0, fy), cv::Point(fx - gap, fy), colour, thickness,
+                     cv::LINE_AA, kSubPixelShift);
+            cv::line(image, cv::Point(fx + gap, fy), cv::Point(last_column, fy), colour, thickness,
+                     cv::LINE_AA, kSubPixelShift);
+        }
+        if (column_crosses)
+        {
+            cv::line(image, cv::Point(fx, 0), cv::Point(fx, fy - gap), colour, thickness,
+                     cv::LINE_AA, kSubPixelShift);
+            cv::line(image, cv::Point(fx, fy + gap), cv::Point(fx, last_row), colour, thickness,
+                     cv::LINE_AA, kSubPixelShift);
+        }
 
+        // Not culled: a circle whose centre is off the picture can still have an arc on it, and clipping is cheaper
+        // than deciding.
         for (double radius : item.circles)
             cv::circle(image, cv::Point(fx, fy), toFixed(radius * size_scale), colour, thickness, cv::LINE_AA,
                        kSubPixelShift);
 
-        if (chosen)
+        if (chosen && row_crosses && column_crosses)
         {
             // A small open square marks the selection, so it is obvious which reticle the keys are about to move.
             const int handle = toFixed((item.gap + 4.0) * size_scale);
             cv::rectangle(image, cv::Point(fx - handle, fy - handle), cv::Point(fx + handle, fy + handle),
                           cv::Scalar(255, 255, 255), 1, cv::LINE_AA, kSubPixelShift);
         }
+    }
+}
+
+void LiveView::drawMenu(cv::Mat& image) const
+{
+    const cv::Rect box = this->menuRect();
+    const cv::Rect clipped = box & cv::Rect(0, 0, image.cols, image.rows);
+    if (clipped.width <= 0 || clipped.height <= 0)
+        return;
+
+    // Dimmed rather than opaque, like the HUD plate, so the menu never completely hides what is underneath it.
+    cv::Mat area = image(clipped);
+    cv::Mat plate(area.size(), area.type(), cv::Scalar(26, 26, 26));
+    cv::addWeighted(plate, 0.86, area, 0.14, 0.0, area);
+    cv::rectangle(image, clipped, cv::Scalar(180, 180, 180), 1, cv::LINE_AA);
+
+    int y = box.y + kMenuPadY;
+    for (std::size_t i = 0; i < this->menu_items_.size(); ++i)
+    {
+        const std::string& label = this->menu_items_[i];
+        if (label == "-")
+        {
+            const int mid = y + kMenuSeparatorHeight / 2;
+            cv::line(image, cv::Point(box.x + kMenuPadX / 2, mid),
+                     cv::Point(box.x + box.width - kMenuPadX / 2, mid), cv::Scalar(110, 110, 110), 1);
+            y += kMenuSeparatorHeight;
+            continue;
+        }
+
+        if (static_cast<int>(i) == this->menu_highlight_)
+            cv::rectangle(image, cv::Rect(box.x + 1, y, box.width - 2, kMenuItemHeight),
+                          cv::Scalar(90, 90, 90), cv::FILLED);
+
+        cv::putText(image, label, cv::Point(box.x + kMenuPadX, y + kMenuItemHeight - 6),
+                    cv::FONT_HERSHEY_SIMPLEX, kMenuFontScale, cv::Scalar(240, 240, 240), 1, cv::LINE_AA);
+        y += kMenuItemHeight;
     }
 }
 

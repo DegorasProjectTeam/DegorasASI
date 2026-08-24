@@ -223,6 +223,36 @@ void LiveModel::requestWbRedDelta(long long delta)
     });
 }
 
+void LiveModel::requestResetControls()
+{
+    const std::lock_guard<std::mutex> lock(this->request_mtx_);
+    this->requests_.push_back([this]()
+    {
+        // WHY THIS EXISTS. Connecting does not put the camera in a known state: the vendor's driver restores whatever
+        // the last session left, and a session that walked the white balance down to its minimum leaves the next one
+        // with a picture that is pure green. Measured on the ASI224MC in one process: at WB 1/1 the channel means
+        // were 2.2 / 220.4 / 2.6, and at the reported defaults of 52/95 they were 230.7 / 220.4 / 224.7.
+        //
+        // The PICTURE controls only, and deliberately: resetting the bandwidth or the binning as well would silently
+        // change the frame rate and the image size, so a command that means "put the colours back" would be a trap.
+        const types::ControlType picture[] = {
+            types::ControlType::EXPOSURE,
+            types::ControlType::GAIN,
+            types::ControlType::OFFSET,
+            types::ControlType::WB_RED,
+            types::ControlType::WB_BLUE,
+        };
+
+        for (types::ControlType control : picture)
+        {
+            types::ControlCaps caps;
+            if (this->camera_.getControlCaps(control, caps) != OperationResult::OPERATION_OK)
+                continue;
+            this->writeControl(control, caps.default_value, false);
+        }
+    });
+}
+
 void LiveModel::requestWbBlueDelta(long long delta)
 {
     if (!this->has_wb_)

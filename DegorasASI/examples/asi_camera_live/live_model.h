@@ -177,6 +177,16 @@ public:
     void requestWbBlueDelta(long long delta);
 
     /**
+     * @brief Puts the picture controls back to the values the camera reports as its own defaults.
+     * @note Exposure, gain, offset and white balance only -- not the bandwidth, the binning or the high-speed mode,
+     *       which change throughput and geometry rather than what the picture looks like.
+     * @note Needed because the vendor's driver hands back whatever the previous session left behind: this camera
+     *       opens with WB_RED and WB_BLUE at 1 against defaults of 52 and 95, which is a picture with no red and no
+     *       blue in it at all. Measured, not guessed -- see the note in the implementation.
+     */
+    void requestResetControls();
+
+    /**
      * @brief The camera's accepted range for the exposure control.
      * @param minimum Receives the smallest accepted value, in microseconds.
      * @param maximum Receives the largest accepted value, in microseconds.

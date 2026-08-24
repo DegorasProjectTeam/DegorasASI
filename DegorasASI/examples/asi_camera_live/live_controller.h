@@ -25,6 +25,7 @@
 
 // C++ INCLUDES
 #include <string>
+#include <vector>
 
 // OPENCV INCLUDES
 #include <opencv2/core.hpp>
@@ -73,9 +74,11 @@ public:
     void pumpSliders();
 
     /**
-     * @brief Handles mouse selection and dragging of reticles.
-     * @note Call once per iteration. A press selects the nearest reticle within reach; holding the button then drags
-     *       it. Placing a NEW reticle is a key rather than a click, so that a stray click cannot litter the image.
+     * @brief Handles mouse selection, dragging, zooming, panning and the context menu.
+     * @note Call once per iteration. A left press selects the nearest reticle within reach and holding the button
+     *       drags it; a right CLICK opens the menu and a right DRAG pans. Placing a new reticle with the left button
+     *       alone is deliberately not possible, so a stray click cannot litter the image: it is either the menu or a
+     *       key.
      */
     void pumpMouse();
 
@@ -119,11 +122,46 @@ public:
 
 private:
 
+    /// @brief What the context menu can be asked to do. The order of the enumerators is not the order on screen.
+    enum class MenuAction
+    {
+        ADD_HERE,          ///< Put a new reticle where the menu was opened.
+        ADD_CENTRED,       ///< Put a reticle on the frame centre.
+        REMOVE_CENTRED,    ///< Take the centred reticle away.
+        DELETE_SELECTED,   ///< Delete the reticle the menu was opened on.
+        DELETE_ALL,        ///< Delete every reticle.
+        SET_COLOUR,        ///< Recolour the selected reticle; the palette index says which colour.
+        THICKER,           ///< Thicken the selected reticle's lines.
+        THINNER,           ///< Thin them.
+        ADD_CIRCLE,        ///< Add a circle to the selected reticle.
+        REMOVE_CIRCLE,     ///< Take its outermost circle away.
+    };
+
+    /// @brief One entry of the menu the view is currently showing.
+    struct MenuEntry
+    {
+        /// @brief Establishes an entry that does nothing, for a separator.
+        MenuEntry();
+
+        MenuAction action;   ///< What choosing it does.
+        int palette;         ///< Palette index for SET_COLOUR; ignored otherwise.
+    };
+
+    /// @brief Builds the menu for a right-click and hands it to the view.
+    void openMenuAt(int canvas_x, int canvas_y);
+
+    /// @brief Carries out one menu choice.
+    void applyMenuChoice(int index);
+
     LiveModel& model_;   ///< Where requests go.
     LiveView& view_;     ///< Where input comes from, and what display toggles act on.
     int shots_;                  ///< Number of files written so far, used to name the next one.
     bool fine_;                  ///< Whether a reticle nudge uses the fine step instead of the coarse one.
     std::string reticle_file_;   ///< Where the reticles are persisted, or empty for not at all.
+
+    /// The actions behind the labels the view is showing, in the same order. Kept here rather than in the view
+    /// because the view deliberately does not know what any item means.
+    std::vector<MenuEntry> menu_entries_;
 };
 
 // ---------------------------------------------------------------------------------------------------------------------

@@ -27,6 +27,7 @@
 #include <chrono>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 // OPENCV INCLUDES
 #include <opencv2/core.hpp>
@@ -50,6 +51,18 @@ namespace live
 // The trackbar plumbing lives here on purpose. highgui hands out C callbacks with a void* payload, so somewhere a
 // file-scope pointer has to exist; keeping that inside the view means the rest of the example never sees it. What the
 // view exposes instead is a pair of "has the user moved a slider?" queries the controller polls.
+//
+// THE COORDINATE CHAIN, which is the view's real job:
+//
+//     sensor --(ROI origin, binning)--> frame --(zoom, pan)--> canvas --(flip, rotation)--> what is on screen
+//
+// The view owns the last two links and is therefore the only thing that can invert them, which is why every position
+// arriving from highgui goes through canvasToFrame() and every mark drawn goes through orientPoint().
+//
+// One measured fact this depends on: highgui delivers mouse positions in IMAGE coordinates, already divided by
+// whatever scale the window was dragged to. It was scaling them a second time here, which put every click -- and so
+// every reticle -- at a fraction of the intended distance from the top-left corner. Measured with a probe that moved
+// the cursor itself to known client-area points: at a window twice the image, client x=640 arrived as x=320.
 // ---------------------------------------------------------------------------------------------------------------------
 
 /**
@@ -208,8 +221,45 @@ public:
 
     /**
      * @brief Returns to showing the whole frame.
+     * @note Zoom and pan only; the orientation is left alone, because a flip set to match the optics is not something
+     *       a "fit the frame" key should undo.
      */
     void resetView();
+
+    /// @brief Mirrors the display left to right.
+    void toggleFlipHorizontal();
+
+    /// @brief Mirrors the display top to bottom.
+    void toggleFlipVertical();
+
+    /**
+     * @brief Steps through the four mirror states: none, horizontal, vertical, both.
+     * @note One key reaches all four on purpose. The Qt backend of highgui discards shift -- see the note on the key
+     *       map -- so a pair of commands that differed only by case would leave half of them unreachable.
+     */
+    void cycleFlip();
+
+    /**
+     * @brief Turns the display in quarter turns.
+     * @param quarters Number of 90-degree steps clockwise; negative turns the other way.
+     * @note Quarter turns only, and deliberately: they are exact. An arbitrary angle has to resample, which blurs a
+     *       two-pixel star and invents structure -- the same reason the zoom is nearest-neighbour.
+     */
+    void rotateBy(int quarters);
+
+    /**
+     * @brief Sets the orientation outright, for a command-line option.
+     * @param flip_horizontal Whether to mirror left to right.
+     * @param flip_vertical   Whether to mirror top to bottom.
+     * @param quarters        Quarter turns clockwise; taken modulo four.
+     */
+    void setOrientation(bool flip_horizontal, bool flip_vertical, int quarters);
+
+    /**
+     * @brief The orientation in words, for the HUD.
+     * @return A description, or an empty string when the display is unmodified.
+     */
+    std::string orientationText() const;
 
     /**
      * @brief The frame-to-sensor relationship used by the last composition.
@@ -232,11 +282,68 @@ public:
 
     /**
      * @brief Whether the right button is held, and how far it has moved since the last call.
-     * @param dx Receives the horizontal movement in window pixels.
-     * @param dy Receives the vertical movement in window pixels.
+     * @param dx Receives the horizontal movement in canvas pixels.
+     * @param dy Receives the vertical movement in canvas pixels.
      * @return True when a right-drag is in progress and there was movement.
      */
     bool takeRightDrag(int& dx, int& dy);
+
+    /**
+     * @brief Whether the right button was CLICKED rather than dragged, since the last call.
+     * @param canvas_x Receives the click column, in canvas pixels.
+     * @param canvas_y Receives the click row, in canvas pixels.
+     * @return True when there was a click to report.
+     * @note Click and drag share the right button because both are natural there: a click opens the menu and a drag
+     *       pans. They are told apart by how far the pointer travelled while the button was down, which is what a
+     *       toolkit would do for us if highgui had menus.
+     */
+    bool takeRightClick(int& canvas_x, int& canvas_y);
+
+    /**
+     * @brief Opens the context menu.
+     * @param canvas_x Column to put its corner at, in canvas pixels.
+     * @param canvas_y Row to put its corner at.
+     * @param items    The labels, top to bottom. An item reading "-" is drawn as a separator and cannot be chosen.
+     * @note The view draws and hit-tests it; it does not know what any item means. highgui has no menus of its own,
+     *       so this is a rectangle painted onto the image and a click compared against it.
+     */
+    void openMenu(int canvas_x, int canvas_y, const std::vector<std::string>& items);
+
+    /**
+     * @brief Whether the context menu is open.
+     * @return True while it is.
+     */
+    bool menuOpen() const;
+
+    /// @brief Closes the context menu without choosing anything.
+    void closeMenu();
+
+    /**
+     * @brief Whether a menu item was chosen since the last call.
+     * @param index Receives the item's position in the list passed to openMenu().
+     * @return True when there was a choice to report.
+     */
+    bool takeMenuChoice(int& index);
+
+    /**
+     * @brief Where the menu was opened, in FRAME coordinates.
+     * @param x Receives the column.
+     * @param y Receives the row.
+     * @return False when the menu was opened off the image.
+     */
+    bool menuAnchorInFrame(int& x, int& y) const;
+
+    /**
+     * @brief Maps a canvas position to frame coordinates.
+     * @param canvas_x Column in canvas pixels, as highgui reports it.
+     * @param canvas_y Row in canvas pixels.
+     * @param x        Receives the frame column.
+     * @param y        Receives the frame row.
+     * @return False when the position falls outside the frame.
+     * @note Public because the controller has to turn a click into a place on the sensor, and the view is the only
+     *       thing that knows the zoom, the pan and the orientation standing between the two.
+     */
+    bool canvasToFrame(int canvas_x, int canvas_y, int& x, int& y) const;
 
     /**
      * @brief The cursor position expressed in FRAME coordinates.
@@ -317,21 +424,35 @@ private:
     /// @brief Draws every reticle, with the selected one picked out.
     void drawReticles(cv::Mat& image) const;
 
+    /// @brief Draws the context menu, when it is open.
+    void drawMenu(cv::Mat& image) const;
+
+    /// @brief Writes the flipped and rotated version of a canvas into another, which may be transposed.
+    void applyOrientation(const cv::Mat& source, cv::Mat& target) const;
+
+    /// @brief Whether any flip or rotation is in effect.
+    bool isOriented() const;
+
+    /// @brief Maps an unoriented canvas position to where it ends up on screen.
+    void orientPoint(double u, double v, double& x, double& y) const;
+
+    /// @brief The inverse of orientPoint().
+    void unorientPoint(double x, double y, double& u, double& v) const;
+
+    /// @brief The inverse of orientPoint() for a DIRECTION, which ignores the mirror offsets.
+    void unorientDelta(double dx, double dy, double& du, double& dv) const;
+
+    /// @brief Which menu item covers a canvas position, or -1 for none.
+    int menuHitTest(int canvas_x, int canvas_y) const;
+
+    /// @brief The menu's rectangle on the canvas, empty when it is closed.
+    cv::Rect menuRect() const;
+
     /// @brief The part of the frame currently visible, in frame pixels.
     cv::Rect visibleRegion() const;
 
     /// @brief Keeps the visible region inside the frame after a zoom or a pan.
     void clampView();
-
-    /**
-     * @brief Maps a window position to frame coordinates.
-     * @param window_x Column in window pixels.
-     * @param window_y Row in window pixels.
-     * @param x        Receives the frame column.
-     * @param y        Receives the frame row.
-     * @return False when the window has no usable size.
-     */
-    bool windowToFrame(int window_x, int window_y, int& x, int& y) const;
 
     std::string title_;          ///< Window name, which is also highgui's handle for it.
     int frame_width_;            ///< Width of the frames being shown.
@@ -347,6 +468,19 @@ private:
     bool show_reticles_;         ///< Whether the reticles are drawn.
     ReticleSet reticles_;        ///< The aiming marks, owned by the view because they are an overlay.
     mutable cv::Mat canvas_;     ///< Scratch the overlay is drawn onto, so the caller's image is left alone.
+    mutable cv::Mat raw_;        ///< The unoriented canvas, used only when a flip or a rotation is in effect.
+    bool flip_h_;                ///< Whether the display is mirrored left to right.
+    bool flip_v_;                ///< Whether the display is mirrored top to bottom.
+    int rotation_;               ///< Quarter turns clockwise, 0 to 3.
+    bool menu_open_;             ///< Whether the context menu is being drawn.
+    int menu_x_;                 ///< Menu corner, canvas column.
+    int menu_y_;                 ///< Menu corner, canvas row.
+    int menu_frame_x_;           ///< Where the menu was opened, frame column, for "add one here".
+    int menu_frame_y_;           ///< Where the menu was opened, frame row.
+    bool menu_anchor_valid_;     ///< Whether that frame position is usable.
+    std::vector<std::string> menu_items_;   ///< The labels, as the controller supplied them.
+    mutable int menu_highlight_;            ///< Item under the pointer, or -1.
+    int menu_choice_;                       ///< Item chosen and not yet consumed, or -1.
     double zoom_;                ///< 1.0 shows the whole frame; higher magnifies.
     double centre_x_;            ///< Frame column at the centre of the visible region.
     double centre_y_;            ///< Frame row at the centre of the visible region.

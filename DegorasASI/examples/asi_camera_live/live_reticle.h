@@ -48,14 +48,19 @@ namespace live
 //     screen without changing the sensor: a resized window, a digital zoom, a pan, a different binning factor, a
 //     different ROI. Store a frame coordinate and every one of those strands the mark somewhere else. Store the
 //     sensor coordinate and the mark stays on the sky.
-//   * SIZES ARE SENSOR PIXELS TOO. An arm of 40 covers forty photosites whether the stream is binned or not, so a
-//     circle drawn around a target keeps meaning the same angle on the sky when the binning changes.
+//   * SIZES ARE SENSOR PIXELS TOO. A gap of 8 covers eight photosites whether the stream is binned or not, so a
+//     circle drawn around a target keeps meaning the same angle on the sky when the binning changes. The line
+//     THICKNESS is the exception and is deliberately in canvas pixels: it is a legibility setting, not a measurement,
+//     and a one-pixel line has to stay one pixel wide at every magnification.
 //   * POSITIONS ARE SUB-PIXEL. They are doubles because the point of a fine adjustment is to land between photosites:
 //     the centroid of a return is not an integer, so a reticle that can only sit on integers cannot be aligned with
 //     one. The coarse step is a whole pixel and the fine step a tenth.
 //
-// A reticle is a cross with a central GAP -- so it marks a point without covering it -- plus any number of concentric
-// circles, which is the classic viewfinder arrangement for judging both position and angular size.
+// A reticle is a FULL-SPAN crosshair: the two lines run the whole width and the whole height of the image, with a
+// central GAP so the marked photosite is never covered, plus any number of concentric circles for judging angular
+// size. Full span rather than short arms because a line that reaches the edges can be aligned against the edges --
+// which is how a crosshair is actually used -- and because a mark whose centre has been panned out of view still
+// shows the row and the column it sits on instead of vanishing.
 // ---------------------------------------------------------------------------------------------------------------------
 
 /**
@@ -112,14 +117,16 @@ double sensorToFrameScale(const FrameGeometry& geometry);
  */
 struct Reticle
 {
-    /// @brief Establishes a reticle at the origin with a legible default cross and no circles.
+    /// @brief Establishes a red, one-pixel reticle at the origin, with a legible gap and no circles.
     Reticle();
 
     double x;                       ///< Absolute sensor column, unbinned, sub-pixel. Ignored while centred.
     double y;                       ///< Absolute sensor row, unbinned, sub-pixel. Ignored while centred.
-    double arm;                     ///< Half-length of each cross arm, in unbinned sensor pixels.
     double gap;                     ///< Radius left blank at the centre, so the marked point stays visible.
-    int thickness;                  ///< Line thickness, in window pixels.
+    int thickness;                  ///< Line and circle thickness, in canvas pixels.
+    int red;                        ///< Colour, red component, 0 to 255.
+    int green;                      ///< Colour, green component, 0 to 255.
+    int blue;                       ///< Colour, blue component, 0 to 255.
     bool centred;                   ///< Follows the frame centre instead of x,y, so a geometry change cannot strand it.
     std::vector<double> circles;    ///< Radii of the concentric circles, in unbinned sensor pixels. May be empty.
 };
@@ -237,16 +244,24 @@ public:
     void placeSelected(double x, double y, const FrameGeometry& geometry);
 
     /**
-     * @brief Changes the selected reticle's cross arm length.
-     * @param delta Pixels to add; the result is kept above a visible minimum.
-     */
-    void resizeSelectedArm(double delta);
-
-    /**
      * @brief Changes the selected reticle's central gap.
      * @param delta Pixels to add; the result is kept at or above zero and below the arm.
      */
     void resizeSelectedGap(double delta);
+
+    /**
+     * @brief Thickens or thins the selected reticle's lines and circles.
+     * @param delta Change in canvas pixels; negative thins. Clamped to a legible range.
+     */
+    void resizeSelectedThickness(int delta);
+
+    /**
+     * @brief Recolours the selected reticle.
+     * @param red   Red component; values outside 0 to 255 are clamped.
+     * @param green Green component.
+     * @param blue  Blue component.
+     */
+    void setSelectedColour(int red, int green, int blue);
 
     /**
      * @brief Appends a circle to the selected reticle, at its current arm radius.

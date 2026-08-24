@@ -39,11 +39,23 @@ namespace live
 namespace
 {
 
-/// Below this a cross is not a cross, so the arm is never allowed under it.
-constexpr double kMinArm = 4.0;
-
-/// Same for a circle: a two-pixel ring is a dot.
+/// A ring narrower than this is a dot, so a circle radius is never allowed under it.
 constexpr double kMinCircleRadius = 3.0;
+
+/// Where a newly added circle starts, in sensor pixels. Clear of any sensible gap, so it is visible at once.
+constexpr double kDefaultCircleRadius = 40.0;
+
+/// The gap is bounded so one mistaken keypress cannot blank the crosshair while it still reads as configured.
+constexpr double kMaxGap = 400.0;
+
+/// Thickness bounds, in canvas pixels. One is a hairline; past eight the mark covers what it is meant to point at.
+constexpr int kMinThickness = 1;
+constexpr int kMaxThickness = 8;
+
+int clampInt(int value, int low, int high)
+{
+    return std::max(low, std::min(high, value));
+}
 
 double clampTo(double value, double low, double high)
 {
@@ -120,9 +132,11 @@ double sensorToFrameScale(const FrameGeometry& geometry)
 Reticle::Reticle() :
     x(0.0),
     y(0.0),
-    arm(40.0),
     gap(8.0),
     thickness(1),
+    red(255),
+    green(0),
+    blue(0),
     centred(false),
     circles()
 {
@@ -281,22 +295,30 @@ void ReticleSet::placeSelected(double x, double y, const FrameGeometry& geometry
     item.y = clampTo(y, 0.0, sensorLimit(geometry.sensor_height));
 }
 
-void ReticleSet::resizeSelectedArm(double delta)
-{
-    if (!this->hasSelection())
-        return;
-    Reticle& item = this->items_[this->selected_];
-    item.arm = std::max(kMinArm, item.arm + delta);
-    // The gap can never swallow the arm, or the cross disappears while looking like it is still configured.
-    item.gap = std::min(item.gap, item.arm - 1.0);
-}
-
 void ReticleSet::resizeSelectedGap(double delta)
 {
     if (!this->hasSelection())
         return;
     Reticle& item = this->items_[this->selected_];
-    item.gap = clampTo(item.gap + delta, 0.0, item.arm - 1.0);
+    item.gap = clampTo(item.gap + delta, 0.0, kMaxGap);
+}
+
+void ReticleSet::resizeSelectedThickness(int delta)
+{
+    if (!this->hasSelection())
+        return;
+    Reticle& item = this->items_[this->selected_];
+    item.thickness = clampInt(item.thickness + delta, kMinThickness, kMaxThickness);
+}
+
+void ReticleSet::setSelectedColour(int red, int green, int blue)
+{
+    if (!this->hasSelection())
+        return;
+    Reticle& item = this->items_[this->selected_];
+    item.red = clampInt(red, 0, 255);
+    item.green = clampInt(green, 0, 255);
+    item.blue = clampInt(blue, 0, 255);
 }
 
 void ReticleSet::addCircleToSelected()
@@ -304,8 +326,8 @@ void ReticleSet::addCircleToSelected()
     if (!this->hasSelection())
         return;
     Reticle& item = this->items_[this->selected_];
-    // At the arm radius, so a newly added circle is immediately visible rather than hidden inside the gap.
-    item.circles.push_back(std::max(kMinCircleRadius, item.arm));
+    // Clear of the gap, so a newly added circle is visible at once rather than hidden inside it.
+    item.circles.push_back(std::max(kDefaultCircleRadius, item.gap + kMinCircleRadius));
 }
 
 bool ReticleSet::removeCircleFromSelected()
@@ -360,7 +382,7 @@ bool ReticleSet::save(const std::string& path) const
     if (!file)
         return false;
 
-    file << "# DegorasASI live-view reticles, version 1.\n"
+    file << "# DegorasASI live-view reticles, version 2.\n"
          << "# One reticle per line. Coordinates are SENSOR pixels and may be fractional; a centred reticle ignores\n"
          << "# x and y and follows the frame centre. circles is a comma-separated list of radii, or absent for none.\n";
 
@@ -372,7 +394,8 @@ bool ReticleSet::save(const std::string& path) const
             file << " centred=1";
         else
             file << " x=" << item.x << " y=" << item.y;
-        file << " arm=" << item.arm << " gap=" << item.gap << " thickness=" << item.thickness;
+        file << " gap=" << item.gap << " thickness=" << item.thickness
+             << " colour=" << item.red << "," << item.green << "," << item.blue;
         if (!item.circles.empty())
         {
             file << " circles=";
@@ -416,11 +439,24 @@ bool ReticleSet::load(const std::string& path)
             {
                 if      (key == "x")         item.x = std::stod(value);
                 else if (key == "y")         item.y = std::stod(value);
-                else if (key == "arm")       item.arm = std::stod(value);
                 else if (key == "gap")       item.gap = std::stod(value);
-                else if (key == "thickness") item.thickness = std::max(1, std::stoi(value));
+                else if (key == "thickness") item.thickness = clampInt(std::stoi(value), kMinThickness,
+                                                                      kMaxThickness);
                 else if (key == "centred")   item.centred = (value != "0");
                 else if (key == "circles")   item.circles = parseRadii(value);
+                else if (key == "colour" || key == "color")
+                {
+                    // The same parser as the radii. A list that is not three numbers long leaves the default red,
+                    // which is better than a half-applied colour.
+                    const std::vector<double> parts = parseRadii(value);
+                    if (parts.size() == 3)
+                    {
+                        item.red = clampInt(static_cast<int>(parts[0]), 0, 255);
+                        item.green = clampInt(static_cast<int>(parts[1]), 0, 255);
+                        item.blue = clampInt(static_cast<int>(parts[2]), 0, 255);
+                    }
+                }
+                // An "arm" key is read and dropped: version 1 files carry one and the shape no longer has arms.
             }
             catch (const std::exception&)
             {
@@ -428,8 +464,7 @@ bool ReticleSet::load(const std::string& path)
             }
         }
 
-        item.arm = std::max(kMinArm, item.arm);
-        item.gap = clampTo(item.gap, 0.0, item.arm - 1.0);
+        item.gap = clampTo(item.gap, 0.0, kMaxGap);
         loaded.push_back(item);
     }
 
