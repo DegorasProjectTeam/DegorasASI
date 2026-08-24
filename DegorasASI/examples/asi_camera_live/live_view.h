@@ -78,6 +78,7 @@ struct Overlay
     std::string bayer_note;   ///< What is being done about colour, e.g. "demosaic RG" or "bin>1: no mosaic".
     std::string probe_text;    ///< The pixel under the cursor, or empty when the cursor is elsewhere.
     std::string reticle_text;  ///< The selected reticle's numbers, or empty when nothing is selected.
+    FrameStats stats;          ///< The histogram and the clipping figures, or empty statistics for no frame.
 };
 
 /**
@@ -374,6 +375,19 @@ public:
     void toggleReticles();
 
     /**
+     * @brief Shows or hides the histogram.
+     * @note Off by default: it costs screen space, and it is consulted while setting an exposure rather than watched
+     *       continuously.
+     */
+    void toggleHistogram();
+
+    /**
+     * @brief Whether the histogram is being drawn.
+     * @return True when it is.
+     */
+    bool histogramVisible() const;
+
+    /**
      * @brief Whether the reticles are being drawn.
      * @return True when they are.
      */
@@ -421,6 +435,9 @@ private:
     /// @brief Draws the wait-for-next-frame bar along the bottom of the image.
     void drawProgress(cv::Mat& image, const ModelState& state) const;
 
+    /// @brief Draws the histogram plate and its curves in the top-right corner.
+    void drawHistogram(cv::Mat& image, const FrameStats& stats) const;
+
     /// @brief Draws every reticle, with the selected one picked out.
     void drawReticles(cv::Mat& image) const;
 
@@ -466,6 +483,7 @@ private:
     DisplayOptions options_;     ///< What the user has asked to be done to the frames.
     bool show_hud_;              ///< Whether the HUD is drawn.
     bool show_reticles_;         ///< Whether the reticles are drawn.
+    bool show_histogram_;        ///< Whether the histogram is drawn.
     ReticleSet reticles_;        ///< The aiming marks, owned by the view because they are an overlay.
     mutable cv::Mat canvas_;     ///< Scratch the overlay is drawn onto, so the caller's image is left alone.
     mutable cv::Mat raw_;        ///< The unoriented canvas, used only when a flip or a rotation is in effect.

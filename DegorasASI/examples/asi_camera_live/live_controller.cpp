@@ -600,6 +600,11 @@ bool LiveController::handleKey(int key, types::Frame& frame, const cv::Mat& disp
             this->view_.toggleHud();
             return true;
 
+        case 'l':
+            this->view_.toggleHistogram();
+            std::cout << "  histogram: " << (this->view_.histogramVisible() ? "shown" : "hidden") << "\n";
+            return true;
+
         // Orientation. Applied to the DISPLAY and not to the camera, even though the camera has a FLIP control: a
         // hardware flip changes what a sensor coordinate means, which would drag every reticle off its photosite, and
         // on a colour sensor it also shifts the Bayer phase without the SDK reporting the new one, so the demosaic
@@ -695,6 +700,7 @@ void LiveController::printKeys() const
         "  A              toggle the percentile auto-stretch\n"
         "  D              toggle demosaicing (raw Bayer <-> colour)\n"
         "  I              toggle the HUD\n"
+        "  L              toggle the histogram (levels), with the clipping percentages\n"
         "  M              flip: none -> horizontal -> vertical -> both -> none\n"
         "  T              rotate 90 degrees clockwise (four presses come back round)\n"
         "\n"

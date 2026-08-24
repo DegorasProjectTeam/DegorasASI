@@ -255,6 +255,7 @@ LiveView::LiveView(const std::string& title, int frame_width, int frame_height) 
     options_(),
     show_hud_(true),
     show_reticles_(true),
+    show_histogram_(false),
     reticles_(),
     canvas_(),
     raw_(),
@@ -434,6 +435,8 @@ const cv::Mat& LiveView::compose(const cv::Mat& image, const ModelState& state, 
         this->drawReticles(this->canvas_);
     if (state.progress_is_useful)
         this->drawProgress(this->canvas_, state);
+    if (this->show_histogram_)
+        this->drawHistogram(this->canvas_, overlay.stats);
     if (this->menu_open_)
         this->drawMenu(this->canvas_);
 
@@ -908,6 +911,16 @@ void LiveView::toggleReticles()
     this->show_reticles_ = !this->show_reticles_;
 }
 
+void LiveView::toggleHistogram()
+{
+    this->show_histogram_ = !this->show_histogram_;
+}
+
+bool LiveView::histogramVisible() const
+{
+    return this->show_histogram_;
+}
+
 bool LiveView::reticlesVisible() const
 {
     return this->show_reticles_;
@@ -1049,6 +1062,76 @@ void LiveView::drawProgress(cv::Mat& image, const ModelState& state) const
     const std::string label = "next frame in " + fixed1(remaining_s) + " s";
     cv::putText(image, label, cv::Point(track.x + 8, track.y + height - 4), cv::FONT_HERSHEY_SIMPLEX, 0.4,
                 cv::Scalar(230, 255, 230), 1, cv::LINE_AA);
+}
+
+void LiveView::drawHistogram(cv::Mat& image, const FrameStats& stats) const
+{
+    if (stats.blue.empty() || stats.tallest_bin <= 0)
+        return;
+
+    const int bins = static_cast<int>(stats.blue.size());
+    const int plot_h = 90;
+    const int pad = 8;
+    const int text_h = 16;
+    const int width = bins + 2 * pad;
+    const int height = plot_h + 2 * pad + text_h;
+
+    // Top right, clear of the HUD plate in the top left.
+    cv::Rect box(image.cols - width - 4, 4, width, height);
+    box &= cv::Rect(0, 0, image.cols, image.rows);
+    if (box.width < 40 || box.height < 30)
+        return;
+
+    cv::Mat area = image(box);
+    cv::Mat plate(area.size(), area.type(), cv::Scalar(18, 18, 18));
+    cv::addWeighted(plate, 0.78, area, 0.22, 0.0, area);
+    cv::rectangle(image, box, cv::Scalar(120, 120, 120), 1);
+
+    const int base_y = box.y + pad + plot_h;
+    const int left_x = box.x + pad;
+
+    // LOGARITHMIC, and not as a preference. On a night sky the background occupies one or two bins and everything
+    // that matters -- the stars, the return -- is a handful of counts next to it; on a linear scale those are a flat
+    // line along the axis. The log makes the tail visible, which is the only reason to look at this at all.
+    const double top = std::log1p(static_cast<double>(stats.tallest_bin));
+
+    const std::vector<int>* channels[3] = {&stats.blue, &stats.green, &stats.red};
+    const cv::Scalar colours[3] = {cv::Scalar(255, 120, 60), cv::Scalar(80, 255, 80), cv::Scalar(80, 80, 255)};
+
+    // One curve when the three channels are the same measurement, three when they are not: drawing three identical
+    // curves would imply a colour measurement that was never made.
+    const int first = stats.has_colour ? 0 : 1;
+    const int last = stats.has_colour ? 2 : 1;
+
+    for (int c = first; c <= last; ++c)
+    {
+        const std::vector<int>& hist = *channels[c];
+        const cv::Scalar colour = stats.has_colour ? colours[c] : cv::Scalar(210, 210, 210);
+
+        std::vector<cv::Point> curve;
+        curve.reserve(static_cast<std::size_t>(bins));
+        for (int i = 0; i < bins; ++i)
+        {
+            const double v = (top > 0.0) ? (std::log1p(static_cast<double>(hist[static_cast<std::size_t>(i)])) / top)
+                                         : 0.0;
+            const int x = left_x + i * (box.width - 2 * pad) / std::max(1, bins - 1);
+            curve.push_back(cv::Point(x, base_y - static_cast<int>(v * plot_h)));
+        }
+        cv::polylines(image, curve, false, colour, 1, cv::LINE_AA);
+    }
+
+    cv::line(image, cv::Point(left_x, base_y), cv::Point(box.x + box.width - pad, base_y),
+             cv::Scalar(110, 110, 110), 1);
+
+    // The numbers are the point, not the shape: "how much am I clipping" is a question with a numeric answer, and the
+    // clipping figures come from the RAW samples, so they stay honest with the auto-stretch on.
+    std::ostringstream os;
+    os << std::fixed << std::setprecision(2)
+       << "clip hi " << stats.clipped_high_pct << "%  lo " << stats.clipped_low_pct << "%"
+       << std::setprecision(1) << "  mean " << stats.mean_pct << "%";
+    const cv::Scalar warn = (stats.clipped_high_pct > 1.0) ? cv::Scalar(80, 80, 255) : cv::Scalar(210, 210, 210);
+    cv::putText(image, os.str(), cv::Point(left_x, box.y + box.height - 4), cv::FONT_HERSHEY_SIMPLEX, 0.38, warn, 1,
+                cv::LINE_AA);
 }
 
 void LiveView::drawReticles(cv::Mat& image) const

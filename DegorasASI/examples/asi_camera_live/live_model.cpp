@@ -235,7 +235,7 @@ void LiveModel::requestResetControls()
         //
         // The PICTURE controls only, and deliberately: resetting the bandwidth or the binning as well would silently
         // change the frame rate and the image size, so a command that means "put the colours back" would be a trap.
-        const types::ControlType picture[] = {
+        const types::ControlTypeList picture = {
             types::ControlType::EXPOSURE,
             types::ControlType::GAIN,
             types::ControlType::OFFSET,
@@ -243,13 +243,10 @@ void LiveModel::requestResetControls()
             types::ControlType::WB_BLUE,
         };
 
-        for (types::ControlType control : picture)
-        {
-            types::ControlCaps caps;
-            if (this->camera_.getControlCaps(control, caps) != OperationResult::OPERATION_OK)
-                continue;
-            this->writeControl(control, caps.default_value, false);
-        }
+        // The library's own operation rather than a loop here: it is the one that knows to skip a control this model
+        // does not expose, and every application wants this, so it belongs next to the controls and not copied into
+        // each example.
+        this->camera_.doResetControlsToDefaults(picture);
     });
 }
 

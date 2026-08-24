@@ -25,6 +25,7 @@
 
 // C++ INCLUDES
 #include <string>
+#include <vector>
 
 // OPENCV INCLUDES
 #include <opencv2/core.hpp>
@@ -104,6 +105,37 @@ void buildDisplay(dpasi::types::Frame& frame, const DisplayOptions& opts, int ba
  *       number is what tells you whether the exposure is saturating.
  */
 std::string describePixel(dpasi::types::Frame& frame, int x, int y);
+
+/**
+ * @brief What a frame's samples look like: a histogram of what is on screen, plus what the SENSOR actually did.
+ * @note TWO DIFFERENT MEASUREMENTS ON PURPOSE, and the distinction is the whole point of the thing. The histogram is
+ *       taken from the DISPLAY image, so it describes what is being looked at. The clipping figures are taken from the
+ *       RAW frame against its format's full scale, because saturation is only real there: with the auto-stretch on the
+ *       display is pushed to 255 by construction, so a display histogram alone would always look full and would hide
+ *       exactly the condition anybody consults a histogram to find.
+ */
+struct FrameStats
+{
+    /// @brief Establishes empty statistics, describing no frame.
+    FrameStats();
+
+    std::vector<int> blue;      ///< 256 bins of the display image, dark to bright. Empty when there was no frame.
+    std::vector<int> green;     ///< As above, green channel.
+    std::vector<int> red;       ///< As above, red channel.
+    bool has_colour;            ///< Whether the three channels are different; false for a mono or unmosaiced frame.
+    int tallest_bin;            ///< Largest count in any channel, for scaling a plot.
+    double clipped_high_pct;    ///< Percentage of RAW samples at the top of the format's range.
+    double clipped_low_pct;     ///< Percentage of RAW samples at zero.
+    double mean_pct;            ///< Mean RAW sample, as a percentage of the format's full scale.
+};
+
+/**
+ * @brief Measures a frame and the image built from it.
+ * @param frame   The frame, for the raw-sample figures. Non-const because wrapping it needs its buffer.
+ * @param display The 8-bit BGR image built from that frame, for the histogram. May be empty.
+ * @param stats   Receives the measurements; left empty when there is nothing to measure.
+ */
+void computeStats(dpasi::types::Frame& frame, const cv::Mat& display, FrameStats& stats);
 
 // ---------------------------------------------------------------------------------------------------------------------
 

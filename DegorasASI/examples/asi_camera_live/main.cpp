@@ -143,6 +143,7 @@ struct Options
     double zoom;
     std::string flip;
     int rotate;
+    bool histogram;
 };
 
 Options::Options() :
@@ -159,7 +160,8 @@ Options::Options() :
     reticles("live_reticles.txt"),
     zoom(1.0),
     flip(),
-    rotate(0)
+    rotate(0),
+    histogram(false)
 {
 }
 
@@ -184,6 +186,7 @@ void printUsage()
         "  --zoom F        start magnified F times on the frame centre (default 1, the whole frame)\n"
         "  --flip WHICH    flip the display: h, v or hv (default none)\n"
         "  --rotate DEG    rotate the display: 0, 90, 180 or 270 clockwise (default 0)\n"
+        "  --histogram     start with the histogram shown; L toggles it while running\n"
         "\n";
 }
 
@@ -208,6 +211,7 @@ bool parseArgs(int argc, char** argv, Options& opt)
         else if (arg == "--reticles" && i + 1 < argc)  { opt.reticles = argv[++i]; }
         else if (arg == "--zoom" && i + 1 < argc)      { opt.zoom = std::atof(argv[++i]); }
         else if (arg == "--flip" && i + 1 < argc)      { opt.flip = argv[++i]; }
+        else if (arg == "--histogram")                 { opt.histogram = true; }
         else if (arg == "--rotate" && i + 1 < argc)    { if (!next(opt.rotate)) return false; }
         else
         {
@@ -292,6 +296,7 @@ int runSnapshot(live::LiveModel& model, live::LiveView& view, live::LiveControll
 
     live::Overlay overlay;
     overlay.bayer_note = bayerNote(desc, frame, bayer, view.displayOptions().demosaic);
+    live::computeStats(frame, display, overlay.stats);
     const std::string view_png = opt.snap_name + "_view.png";
     const bool view_ok = cv::imwrite(view_png, view.compose(display, model.state(), overlay, geometry));
 
@@ -416,6 +421,9 @@ int main(int argc, char** argv)
     if (opt.zoom > 1.0)
         view.zoomBy(opt.zoom, live_format.width / 2.0, live_format.height / 2.0);
 
+    if (opt.histogram)
+        view.toggleHistogram();
+
     if (!opt.flip.empty() || opt.rotate != 0)
     {
         const bool flip_h = (opt.flip.find('h') != std::string::npos);
@@ -510,6 +518,9 @@ int main(int argc, char** argv)
             const int bayer = desc.is_colour ? live::bayerCodeFor(desc.bayer_pattern, frame) : -1;
             live::buildDisplay(frame, current, bayer, display);
             overlay.bayer_note = bayerNote(desc, frame, bayer, current.demosaic);
+            // Measured here rather than in the view, and only when a frame actually arrived: the composition runs at
+            // its own rate and re-measuring the same frame for every repaint would be pure waste.
+            live::computeStats(frame, display, overlay.stats);
             rebuild = false;
         }
 

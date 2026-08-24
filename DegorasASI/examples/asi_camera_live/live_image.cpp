@@ -191,6 +191,78 @@ void stretchToEightBits(const cv::Mat& src, cv::Mat& dst, double low_pct, double
     src.convertTo(dst, CV_8U, alpha, -lo * alpha);
 }
 
+FrameStats::FrameStats() :
+    blue(),
+    green(),
+    red(),
+    has_colour(false),
+    tallest_bin(0),
+    clipped_high_pct(0.0),
+    clipped_low_pct(0.0),
+    mean_pct(0.0)
+{
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+
+void computeStats(types::Frame& frame, const cv::Mat& display, FrameStats& stats)
+{
+    stats = FrameStats();
+
+    // -- The histogram: what is on screen -----------------------------------------------------------------------------
+    if (!display.empty() && display.type() == CV_8UC3)
+    {
+        const int bins = 256;
+        const float range[] = {0.0f, 256.0f};
+        const float* ranges[] = {range};
+
+        std::vector<int>* targets[3] = {&stats.blue, &stats.green, &stats.red};
+        for (int channel = 0; channel < 3; ++channel)
+        {
+            cv::Mat hist;
+            cv::calcHist(&display, 1, &channel, cv::Mat(), hist, 1, &bins, ranges);
+
+            targets[channel]->resize(static_cast<std::size_t>(bins));
+            for (int i = 0; i < bins; ++i)
+            {
+                const int count = static_cast<int>(hist.at<float>(i));
+                (*targets[channel])[static_cast<std::size_t>(i)] = count;
+                stats.tallest_bin = std::max(stats.tallest_bin, count);
+            }
+        }
+
+        // Compared rather than assumed: a mono frame, and a colour frame with demosaicing off, both arrive here as
+        // three identical channels, and drawing three curves on top of each other would suggest a measurement that
+        // was never made.
+        stats.has_colour = (stats.blue != stats.green) || (stats.green != stats.red);
+    }
+
+    // -- The clipping: what the sensor did -----------------------------------------------------------------------------
+    cv::Mat raw = wrapFrame(frame);
+    if (raw.empty())
+        return;
+
+    // Full scale of the FORMAT, not of the sensor. A 12-bit sensor delivered as RAW16 is left-aligned by the SDK, so
+    // its saturated samples do reach the top of the 16-bit range.
+    const double full_scale = (raw.depth() == CV_16U) ? 65535.0 : 255.0;
+
+    const cv::Mat flat = raw.isContinuous() ? raw.reshape(1) : raw.clone().reshape(1);
+    const double samples = static_cast<double>(flat.total());
+    if (samples <= 0.0)
+        return;
+
+    cv::Mat mask;
+    cv::compare(flat, full_scale, mask, cv::CMP_GE);
+    stats.clipped_high_pct = 100.0 * cv::countNonZero(mask) / samples;
+
+    cv::compare(flat, 0.0, mask, cv::CMP_LE);
+    stats.clipped_low_pct = 100.0 * cv::countNonZero(mask) / samples;
+
+    stats.mean_pct = 100.0 * cv::mean(flat)[0] / full_scale;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+
 void buildDisplay(types::Frame& frame, const DisplayOptions& opts, int bayer, cv::Mat& out)
 {
     cv::Mat view = wrapFrame(frame);
