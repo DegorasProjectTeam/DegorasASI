@@ -212,6 +212,36 @@ public:
      */
     types::OperationResult doSetControl(types::ControlType type, const types::ControlValue& value);
 
+    /**
+     * @brief Put a selection of controls back to the values the camera reports as its defaults.
+     * @param controls Which controls to reset. Any the camera does not expose, or exposes read-only, is SKIPPED
+     *                 rather than treated as an error, so the same list can be used across camera models.
+     * @return OPERATION_OK when every applicable control was written; otherwise the first failure encountered, after
+     *         having attempted the rest.
+     * @note Connecting does NOT put a camera in a known state, and that is the reason this exists. The vendor's driver
+     *       restores whatever the previous session left behind, so a program that walked a control to an extreme and
+     *       exited hands the next one a camera in that state with nothing saying so. Measured on an ASI224MC: it opens
+     *       with WB_RED and WB_BLUE at 1 against reported defaults of 52 and 95, which is a picture with no red and no
+     *       blue in it at all.
+     * @note Deliberately NOT done inside @ref doConnect: a control library should not silently change the state of
+     *       hardware it has just attached to. Whether to normalise is the application's decision, and this is how it
+     *       makes it.
+     */
+    types::OperationResult doResetControlsToDefaults(const types::ControlTypeList& controls);
+
+    /**
+     * @brief Put EVERY writable control back to the value the camera reports as its default.
+     * @return OPERATION_OK when every writable control was written; otherwise the first failure encountered.
+     * @warning Every writable control means every one: the USB bandwidth limit, the hardware binning and the
+     *          high-speed mode go back to their defaults along with exposure, gain and white balance. That changes
+     *          throughput and image geometry, not just how the picture looks. Pass an explicit list to the overload
+     *          above when only the picture controls are meant.
+     * @note A separate overload rather than a defaulted argument, as everywhere else in this library: a default
+     *       argument in a shared library is compiled into the CALLER, so changing it later would not reach code
+     *       already built against the old header.
+     */
+    types::OperationResult doResetControlsToDefaults();
+
     // Typed conveniences. Provided ONLY where the SDK's unit is not the natural one, so each is the single place its
     // conversion happens and no consumer has to remember it. Everything else goes through the generic pair above.
 

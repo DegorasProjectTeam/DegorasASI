@@ -461,6 +461,61 @@ OperationResult AsiCamera::doSetControl(ControlType type, const ControlValue& va
 
 // -- Typed control conveniences ---------------------------------------------------------------------------------------
 
+OperationResult AsiCamera::doResetControlsToDefaults(const ControlTypeList& controls)
+{
+    OperationResult first_failure = OperationResult::OPERATION_OK;
+
+    for (ControlType type : controls)
+    {
+        ControlCaps caps;
+        {
+            const std::lock_guard<std::mutex> lock(this->state_mtx_);
+            const OperationResult res = this->checkConnectedLocked();
+            if (res != OperationResult::OPERATION_OK)
+                return res;
+
+            // Absent or read-only is SKIPPED, not failed: one class drives every ASI model, so a list that suits a
+            // cooled camera must not fail wholesale on one without a cooler.
+            if (!this->findCapsLocked(type, caps) || !caps.is_writable)
+                continue;
+        }
+
+        ControlValue wanted;
+        wanted.value = caps.default_value;
+        wanted.is_auto = false;
+
+        // Through the public setter, so the range check and the write path are the same ones every other caller gets.
+        const OperationResult res = this->doSetControl(type, wanted);
+        if (res != OperationResult::OPERATION_OK && first_failure == OperationResult::OPERATION_OK)
+        {
+            // The rest are still attempted: a caller asking for a known state is better served by as much of it as
+            // the camera will give than by stopping at the first control that refused.
+            first_failure = res;
+        }
+    }
+
+    return first_failure;
+}
+
+OperationResult AsiCamera::doResetControlsToDefaults()
+{
+    ControlTypeList writable;
+    {
+        const std::lock_guard<std::mutex> lock(this->state_mtx_);
+        const OperationResult res = this->checkConnectedLocked();
+        if (res != OperationResult::OPERATION_OK)
+            return res;
+
+        for (const ControlCaps& caps : this->control_caps_)
+        {
+            if (caps.is_writable)
+                writable.push_back(caps.type);
+        }
+    }
+
+    return this->doResetControlsToDefaults(writable);
+}
+
 OperationResult AsiCamera::doSetExposure(std::chrono::microseconds exposure)
 {
     ControlValue value;

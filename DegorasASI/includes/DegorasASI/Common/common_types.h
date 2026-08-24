@@ -319,6 +319,7 @@ struct DEGORASASI_EXPORT ControlCaps
 };
 
 using ControlCapsList = std::vector<ControlCaps>;   ///< All controls a camera exposes.
+using ControlTypeList = std::vector<ControlType>;   ///< A selection of controls, for operations that take several.
 
 /// Current value of one camera control.
 struct DEGORASASI_EXPORT ControlValue
