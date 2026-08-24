@@ -66,6 +66,59 @@ using namespace dpasi::types;
 constexpr const char* kModel = "ASI224MC";
 
 // ---------------------------------------------------------------------------------------------------------------------
+// TIME WINDOWS: WAIT FOR THE CONDITION, NOT FOR THE CLOCK.
+//
+// Every wait in this file used to be a fixed sleep -- two seconds here, six hundred milliseconds there -- followed by
+// an assertion that something had happened in the meantime. That is wrong in both directions at once: it wastes two
+// seconds on a link that delivers in two hundred milliseconds, and it fails for no good reason on a busy machine or a
+// USB2 host where the frame simply had not arrived yet. Neither outcome tells you anything about the code under test.
+//
+// So the windows below are LIMITS, not durations: each wait returns as soon as the thing it is waiting for is true,
+// and only the limit is a number. The limits are derived from the exposure the test configures, so pointing this
+// suite at a camera or a link with different timing does not mean revisiting a table of magic constants.
+//
+// One wait cannot work this way and is marked where it appears: proving that the callback does NOT fire after a
+// disconnect is a wait for a NON-event, and the only honest way to bound that is to wait longer than a frame would
+// have taken.
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// The exposure every check below runs at. Short, because none of them is about image quality.
+constexpr std::chrono::milliseconds kExposure{20};
+
+/// A generous allowance for ONE frame to come back: exposure, readout and the USB transfer. Wide on purpose -- this
+/// suite also runs on a USB2 host, where a 640x480 frame is not instantaneous.
+constexpr std::chrono::milliseconds kFrameBudget{400};
+
+/// How many frames a "frames are flowing" wait insists on. More than one, so a single lucky frame cannot satisfy a
+/// check that is really about a stream being pumped.
+constexpr int kFramesWanted = 5;
+
+/// @brief Blocks until a predicate holds, or until the limit runs out.
+/// @return Whether it came true. Polled rather than condition-variable driven because the things being waited on are
+///         plain atomics written by the worker thread, and a two-millisecond poll is far finer than a frame.
+template <typename Predicate>
+bool waitFor(Predicate ready, std::chrono::milliseconds limit)
+{
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + limit;
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        if (ready())
+            return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return ready();
+}
+
+/// @brief Blocks until a counter has advanced by @p wanted frames, or until that many frame budgets have passed.
+template <typename Counter>
+bool waitForFrames(const Counter& counter, int wanted)
+{
+    const auto start = counter.load();
+    return waitFor([&counter, start, wanted]() { return counter.load() - start >= wanted; },
+                   kFrameBudget * wanted);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // Integration test for callback-driven frame acquisition against real hardware: delivery, the guards around starting
 // and stopping the worker, buffer reuse, and every teardown path (explicit stop, stopping the stream, disconnecting,
 // and the destructor). SELF-SKIPS with success when no camera is attached.
@@ -79,7 +132,7 @@ void configure(AsiCamera& camera)
     RoiFormat roi;
     roi.width = 640; roi.height = 480; roi.bin = 1; roi.format = ImageFormat::RAW8;
     assert(camera.doSetRoi(roi, RoiPosition()) == OperationResult::OPERATION_OK);
-    assert(camera.doSetExposure(std::chrono::milliseconds(20)) == OperationResult::OPERATION_OK);
+    assert(camera.doSetExposure(kExposure) == OperationResult::OPERATION_OK);
 }
 
 void testStartGuards(AsiCamera& camera)
@@ -148,15 +201,16 @@ void testFramesAreDelivered(AsiCamera& camera)
 
     assert(camera.doStartVideoCapture() == OperationResult::OPERATION_OK);
     assert(camera.startFrameAcquisition(std::chrono::milliseconds(1000)) == OperationResult::OPERATION_OK);
-    std::this_thread::sleep_for(std::chrono::seconds(2));
+    const bool flowed = waitForFrames(ok_frames, kFramesWanted);
     assert(camera.stopFrameAcquisition() == OperationResult::OPERATION_OK);
 
     const std::uint64_t delivered = camera.getAcquiredFrameCount();
     const std::uint64_t failed = camera.getFailedFrameCount();
-    std::cout << "    " << ok_frames.load() << " frames to the callback in 2 s ("
+    std::cout << "    " << ok_frames.load() << " frames to the callback ("
               << delivered << " counted by the pump, " << failed << " failures)\n";
 
-    assert(ok_frames.load() > 0);
+    assert(flowed);
+    assert(ok_frames.load() >= kFramesWanted);
     assert(geometry_ok.load());
     assert(size_ok.load());
     assert(monotonic.load());
@@ -173,17 +227,25 @@ void testCountersResetPerRun(AsiCamera& camera)
 {
     std::cout << "  counters reset on each start\n";
 
-    assert(camera.setNewFrameCb([](OperationResult, const Frame&){}) == OperationResult::OPERATION_OK);
+    // The wait counts frames THROUGH THE CALLBACK rather than through the pump's own counter, and that matters
+    // here: the whole point of this check is whether the pump counter resets, so waiting on it would make the second
+    // run's wait succeed instantly on a stale value and hide exactly the bug being looked for.
+    std::atomic<int> seen{0};
+    assert(camera.setNewFrameCb([&seen](OperationResult res, const Frame&)
+    {
+        if (res == OperationResult::OPERATION_OK)
+            ++seen;
+    }) == OperationResult::OPERATION_OK);
     assert(camera.doStartVideoCapture() == OperationResult::OPERATION_OK);
 
     assert(camera.startFrameAcquisition(std::chrono::milliseconds(1000)) == OperationResult::OPERATION_OK);
-    std::this_thread::sleep_for(std::chrono::milliseconds(600));
+    assert(waitForFrames(seen, kFramesWanted));
     assert(camera.stopFrameAcquisition() == OperationResult::OPERATION_OK);
     const std::uint64_t first_run = camera.getAcquiredFrameCount();
     assert(first_run > 0);
 
     assert(camera.startFrameAcquisition(std::chrono::milliseconds(1000)) == OperationResult::OPERATION_OK);
-    std::this_thread::sleep_for(std::chrono::milliseconds(600));
+    assert(waitForFrames(seen, kFramesWanted));
     assert(camera.stopFrameAcquisition() == OperationResult::OPERATION_OK);
     const std::uint64_t second_run = camera.getAcquiredFrameCount();
 
@@ -199,10 +261,18 @@ void testStoppingTheStreamStopsTheWorker(AsiCamera& camera)
 {
     std::cout << "  stopping the stream stops the worker\n";
 
-    assert(camera.setNewFrameCb([](OperationResult, const Frame&){}) == OperationResult::OPERATION_OK);
+    std::atomic<int> seen{0};
+    assert(camera.setNewFrameCb([&seen](OperationResult res, const Frame&)
+    {
+        if (res == OperationResult::OPERATION_OK)
+            ++seen;
+    }) == OperationResult::OPERATION_OK);
     assert(camera.doStartVideoCapture() == OperationResult::OPERATION_OK);
     assert(camera.startFrameAcquisition(std::chrono::milliseconds(1000)) == OperationResult::OPERATION_OK);
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    // Waiting for frames rather than for a clock also makes the precondition stronger: the worker is not merely
+    // flagged as running, it is demonstrably pumping when the stream is pulled out from under it.
+    assert(waitForFrames(seen, kFramesWanted));
     assert(camera.isFrameAcquisitionRunning());
 
     // Leaving the worker running against a stopped stream would flood the callback with timeouts, so stopping the
@@ -229,8 +299,7 @@ void testDisconnectStopsTheWorker(CameraId id)
 
     assert(camera.doStartVideoCapture() == OperationResult::OPERATION_OK);
     assert(camera.startFrameAcquisition(std::chrono::milliseconds(1000)) == OperationResult::OPERATION_OK);
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    assert(frames.load() > 0);
+    assert(waitForFrames(frames, kFramesWanted));
 
     // Disconnecting straight from a running worker: it must stop the worker, wait out the capture in flight, and only
     // then close. No explicit stop first.
@@ -245,9 +314,11 @@ void testDisconnectStopsTheWorker(CameraId id)
     assert(ms < 5000);   // bounded
     std::cout << "    disconnect from a running worker took " << ms << " ms\n";
 
-    // The callback must not fire after the disconnect returns.
+    // The callback must not fire after the disconnect returns. THE ONE FIXED SLEEP IN THIS FILE, and unavoidable:
+    // this is a wait for a non-event, so there is no condition to wait on. Bounded by a frame budget, which is the
+    // honest length -- if the worker were still alive, a frame would have arrived inside it.
     const int settled = frames.load();
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    std::this_thread::sleep_for(kFrameBudget);
     assert(frames.load() == settled);
 }
 
@@ -259,11 +330,17 @@ void testDestructorStopsTheWorker(CameraId id)
         AsiCamera camera(id);
         assert(camera.doConnect() == OperationResult::OPERATION_OK);
         configure(camera);
-        assert(camera.setNewFrameCb([](OperationResult, const Frame&){}) == OperationResult::OPERATION_OK);
+        std::atomic<int> seen{0};
+        assert(camera.setNewFrameCb([&seen](OperationResult res, const Frame&)
+        {
+            if (res == OperationResult::OPERATION_OK)
+                ++seen;
+        }) == OperationResult::OPERATION_OK);
         assert(camera.doStartVideoCapture() == OperationResult::OPERATION_OK);
         assert(camera.startFrameAcquisition(std::chrono::milliseconds(1000)) == OperationResult::OPERATION_OK);
-        std::this_thread::sleep_for(std::chrono::milliseconds(400));
-        // No stop, no disconnect: the destructor must do all of it without hanging.
+        assert(waitForFrames(seen, kFramesWanted));
+        // No stop, no disconnect: the destructor must do all of it without hanging, and with frames actually in
+        // flight rather than merely a worker that was started a moment ago.
     }
 
     assert(!asi::isCameraClaimed(id));
@@ -289,7 +366,7 @@ void testCallbackMayBeReplacedAndCleared(AsiCamera& camera)
 
     assert(camera.doStartVideoCapture() == OperationResult::OPERATION_OK);
     assert(camera.startFrameAcquisition(std::chrono::milliseconds(1000)) == OperationResult::OPERATION_OK);
-    std::this_thread::sleep_for(std::chrono::milliseconds(600));
+    assert(waitForFrames(first, kFramesWanted));
     const int first_before_swap = first.load();
     assert(first_before_swap > 0);
 
@@ -298,7 +375,7 @@ void testCallbackMayBeReplacedAndCleared(AsiCamera& camera)
     {
         if (res == OperationResult::OPERATION_OK) ++second;
     }) == OperationResult::OPERATION_OK);
-    std::this_thread::sleep_for(std::chrono::milliseconds(600));
+    assert(waitForFrames(second, kFramesWanted));
 
     assert(second.load() > 0);
     std::cout << "    first callback " << first.load() << " frames, second " << second.load() << "\n";
@@ -306,8 +383,7 @@ void testCallbackMayBeReplacedAndCleared(AsiCamera& camera)
     // Clearing it must not break the worker: acquisition keeps running, frames are simply not delivered.
     assert(camera.setNewFrameCb(nullptr) == OperationResult::OPERATION_OK);
     const std::uint64_t before = camera.getAcquiredFrameCount();
-    std::this_thread::sleep_for(std::chrono::milliseconds(400));
-    assert(camera.getAcquiredFrameCount() > before);
+    assert(waitFor([&camera, before]() { return camera.getAcquiredFrameCount() > before; }, kFrameBudget * 2));
 
     assert(camera.stopFrameAcquisition() == OperationResult::OPERATION_OK);
     assert(camera.doStopVideoCapture() == OperationResult::OPERATION_OK);
@@ -341,9 +417,9 @@ void testObserversAreSafeFromInsideTheCallback(AsiCamera& camera)
     assert(camera.doStartVideoCapture() == OperationResult::OPERATION_OK);
     assert(camera.startFrameAcquisition(std::chrono::milliseconds(1000)) == OperationResult::OPERATION_OK);
 
-    // Let deliveries start, then stop while the callback is actively hammering the observers.
-    while (observed.load() < 3)
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    // Let deliveries start, then stop while the callback is actively hammering the observers. BOUNDED: this used to
+    // be a bare while-loop with no way out, so a camera that stopped delivering hung the test instead of failing it.
+    assert(waitForFrames(observed, 3));
 
     const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
     const OperationResult stopped = camera.stopFrameAcquisition();
@@ -387,9 +463,9 @@ void testPollingAndCallbackStylesAgree(AsiCamera& camera)
     }) == OperationResult::OPERATION_OK);
 
     assert(camera.startFrameAcquisition(std::chrono::milliseconds(1000)) == OperationResult::OPERATION_OK);
-    for (int i = 0; i < 40 && !got_cb.load(); ++i)
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    const bool arrived = waitFor([&got_cb]() { return got_cb.load(); }, kFrameBudget * kFramesWanted);
     assert(camera.stopFrameAcquisition() == OperationResult::OPERATION_OK);
+    assert(arrived);
     assert(got_cb.load());
 
     assert(from_cb.width == manual.width && from_cb.height == manual.height);
