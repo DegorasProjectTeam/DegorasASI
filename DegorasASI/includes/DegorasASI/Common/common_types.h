@@ -158,20 +158,20 @@ enum class ControlType : std::uint8_t
     GAMMA                   = 2,   ///< Gamma correction.
     WB_RED                  = 3,   ///< White balance, red channel.
     WB_BLUE                 = 4,   ///< White balance, blue channel.
-    OFFSET                  = 5,   ///< Black level / pedestal (the vendor's legacy name is BRIGHTNESS).
+    OFFSET                  = 5,   ///< Black level, lifted so read noise is not clipped at zero (was BRIGHTNESS).
     BANDWIDTH_OVERLOAD      = 6,   ///< USB bandwidth usage, as a percentage. Lower it if frames are dropped.
-    OVERCLOCK               = 7,   ///< Sensor overclocking.
+    OVERCLOCK               = 7,   ///< Push the sensor clock past its rated speed: more noise, not always supported.
     TEMPERATURE             = 8,   ///< Sensor temperature in TENTHS of a degree Celsius (usually read-only).
     FLIP                    = 9,   ///< Image flip; the value is a @ref FlipMode.
     AUTO_MAX_GAIN           = 10,  ///< Auto-exposure algorithm's gain ceiling.
     AUTO_MAX_EXPOSURE       = 11,  ///< Auto-exposure algorithm's exposure ceiling in MILLISECONDS.
     AUTO_TARGET_BRIGHTNESS  = 12,  ///< Auto-exposure algorithm's target brightness.
-    HARDWARE_BIN            = 13,  ///< Enable on-sensor (hardware) binning.
-    HIGH_SPEED_MODE         = 14,  ///< Trade bit depth for frame rate.
+    HARDWARE_BIN            = 13,  ///< Bin in the readout, not in software: faster, less read noise, fewer formats.
+    HIGH_SPEED_MODE         = 14,  ///< Faster readout at reduced bit depth (typically 8-bit instead of 12).
     COOLER_POWER_PERC       = 15,  ///< Cooler duty cycle, as a percentage (cooled cameras only).
     TARGET_TEMPERATURE      = 16,  ///< Cooler set point in WHOLE degrees Celsius (cooled cameras only).
     COOLER_ON               = 17,  ///< Enable the thermoelectric cooler (cooled cameras only).
-    MONO_BIN                = 18,  ///< Bin a colour sensor to mono, reducing binning artefacts.
+    MONO_BIN                = 18,  ///< Bin a colour sensor as if mono: no Bayer grid artefact, no colour.
     FAN_ON                  = 19,  ///< Enable the cooling fan.
     PATTERN_ADJUST          = 20,  ///< Fixed-pattern-noise adjustment.
     ANTI_DEW_HEATER         = 21,  ///< Enable the window anti-dew heater.
@@ -181,7 +181,7 @@ enum class ControlType : std::uint8_t
     GPS_SUPPORT             = 25,  ///< Whether the GPS module is present/enabled (GPS cameras only).
     GPS_START_LINE          = 26,  ///< First sensor line stamped with GPS time (GPS cameras only).
     GPS_END_LINE            = 27,  ///< Last sensor line stamped with GPS time (GPS cameras only).
-    ROLLING_INTERVAL        = 28   ///< Rolling-shutter line interval in MICROSECONDS.
+    ROLLING_INTERVAL        = 28   ///< Rolling-shutter line-to-line delay in MICROSECONDS: the skew of one frame.
 };
 
 // The vendor header additionally defines ASI_BRIGHTNESS and ASI_AUTO_MAX_BRIGHTNESS as preprocessor ALIASES of
