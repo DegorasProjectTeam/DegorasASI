@@ -73,7 +73,9 @@ ModelState::ModelState() :
     next_frame_progress(0.0),
     expected_interval_ms(0.0),
     progress_is_useful(false),
-    last_error()
+    last_error(),
+    temperature_c(0.0),
+    temperature_valid(false)
 {
 }
 
@@ -426,6 +428,8 @@ void LiveModel::refreshControls()
     long long gain = -1;
     long long red = -1;
     long long blue = -1;
+    double temperature = 0.0;
+    bool temperature_ok = false;
 
     if (this->camera_.getControl(types::ControlType::EXPOSURE, value) == OperationResult::OPERATION_OK)
         exposure = value.value;
@@ -439,11 +443,25 @@ void LiveModel::refreshControls()
             blue = value.value;
     }
 
+    // TEMPERATURE is reported in TENTHS of a degree Celsius, which is the one unit in this enum that catches
+    // everybody, and it is read-only on every camera seen so far. hasControl() is asked first because an uncooled
+    // camera may not expose it at all, and a missing control must read as "no reading" and not as 0 degrees.
+    if (this->camera_.hasControl(types::ControlType::TEMPERATURE) &&
+        this->camera_.getControl(types::ControlType::TEMPERATURE, value) == OperationResult::OPERATION_OK)
+    {
+        temperature = static_cast<double>(value.value) / 10.0;
+        temperature_ok = true;
+    }
+
     const std::lock_guard<std::mutex> lock(this->state_mtx_);
     if (exposure >= 0) this->state_.exposure_us = exposure;
     if (gain >= 0)     this->state_.gain = gain;
     if (red >= 0)      this->state_.wb_red = red;
     if (blue >= 0)     this->state_.wb_blue = blue;
+
+    this->state_.temperature_valid = temperature_ok;
+    if (temperature_ok)
+        this->state_.temperature_c = temperature;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

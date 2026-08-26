@@ -85,6 +85,8 @@ struct ModelState
     double expected_interval_ms;  ///< Estimated wait for one frame, so a bar can say how many seconds remain.
     bool progress_is_useful;      ///< True when that interval is long enough for a progress bar to mean something.
     std::string last_error;       ///< Text of the most recent acquisition failure, or empty.
+    double temperature_c;         ///< Sensor temperature in Celsius; meaningful only when @ref temperature_valid.
+    bool temperature_valid;       ///< Whether the camera reported a temperature: not every model has the sensor.
 };
 
 /**

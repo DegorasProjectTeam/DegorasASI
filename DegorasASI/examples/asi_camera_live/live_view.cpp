@@ -979,8 +979,13 @@ void LiveView::drawHud(cv::Mat& image, const ModelState& state, const Overlay& o
         first += "    WB r" + std::to_string(state.wb_red) + " b" + std::to_string(state.wb_blue);
     lines.push_back(first);
 
-    lines.push_back(fixed1(state.fps) + " fps    dropped " + std::to_string(state.dropped) +
-                    "    seq " + std::to_string(state.sequence));
+    std::string second = fixed1(state.fps) + " fps    dropped " + std::to_string(state.dropped) +
+                         "    seq " + std::to_string(state.sequence);
+    // Only shown when the camera actually reported one: a fixed "0.0 C" on a camera without the sensor would be a
+    // reading that is not a reading, which is worse than a gap in the line.
+    if (state.temperature_valid)
+        second += "    " + fixed1(state.temperature_c) + " C";
+    lines.push_back(second);
     std::string third = std::string("stretch ") + (this->options_.stretch ? "on " : "off") + "    " +
                         overlay.bayer_note;
     if (this->zoom_ > 1.0)
