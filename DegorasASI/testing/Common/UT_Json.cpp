@@ -150,6 +150,13 @@ void testCameraDescriptor()
     desc.is_usb3_camera = true;
     desc.is_usb3_host = false;
 
+    // Every boolean is exercised in BOTH states, and that is the point rather than thoroughness for its own sake.
+    // Left at their default false, a serialiser that dropped a field ENTIRELY would still round-trip to false and
+    // the assertion would pass: the test could not tell "written as false" from "never written".
+    desc.has_mechanical_shutter = true;
+    desc.is_cooled = true;
+    desc.is_trigger_camera = true;
+
     const CameraDescriptor rt = CameraDescriptor::fromJsonStr(desc.toJsonStr());
     assert(rt.id == desc.id && rt.name == desc.name);
     assert(rt.max_width == desc.max_width && rt.max_height == desc.max_height && rt.bit_depth == desc.bit_depth);
@@ -158,7 +165,12 @@ void testCameraDescriptor()
     assert(rt.supported_bins == desc.supported_bins);
     assert(rt.supported_formats == desc.supported_formats);
     assert(rt.has_st4_port && rt.is_usb3_camera && !rt.is_usb3_host);
-    assert(!rt.has_mechanical_shutter && !rt.is_cooled && !rt.is_trigger_camera);
+    assert(rt.has_mechanical_shutter && rt.is_cooled && rt.is_trigger_camera);
+
+    // The false direction, from a default descriptor, so both values of all seven booleans are covered.
+    const CameraDescriptor zero_rt = CameraDescriptor::fromJsonStr(CameraDescriptor().toJsonStr());
+    assert(!zero_rt.is_colour && !zero_rt.has_mechanical_shutter && !zero_rt.has_st4_port);
+    assert(!zero_rt.is_cooled && !zero_rt.is_usb3_camera && !zero_rt.is_usb3_host && !zero_rt.is_trigger_camera);
 
     const CameraDescriptor rtp = CameraDescriptor::fromJsonStr(desc.toJsonStr(true));   // via pretty
     assert(rtp.name == desc.name && rtp.supported_bins == desc.supported_bins);
