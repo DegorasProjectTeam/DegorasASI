@@ -129,6 +129,16 @@ double sensorToFrameScale(const FrameGeometry& geometry)
 
 // ---------------------------------------------------------------------------------------------------------------------
 
+const char* toString(ReticleShape shape)
+{
+    switch (shape)
+    {
+        case ReticleShape::CROSS: return "cross";
+        case ReticleShape::X:     return "X";
+    }
+    return "cross";
+}
+
 Reticle::Reticle() :
     x(0.0),
     y(0.0),
@@ -138,6 +148,8 @@ Reticle::Reticle() :
     green(0),
     blue(0),
     centred(false),
+    shape(ReticleShape::CROSS),
+    locked(false),
     circles()
 {
 }
@@ -219,9 +231,38 @@ bool ReticleSet::removeSelected()
 {
     if (!this->hasSelection())
         return false;
+    // A locked mark is not deleted. The caller distinguishes this refusal from "nothing selected" by asking
+    // isSelectedLocked(), so it can say which of the two happened instead of failing silently.
+    if (this->items_[this->selected_].locked)
+        return false;
     this->items_.erase(this->items_.begin() + static_cast<std::ptrdiff_t>(this->selected_));
     this->selected_ = this->items_.size();
     return true;
+}
+
+bool ReticleSet::toggleSelectedLock()
+{
+    if (!this->hasSelection())
+        return false;
+    Reticle& item = this->items_[this->selected_];
+    item.locked = !item.locked;
+    return item.locked;
+}
+
+bool ReticleSet::isSelectedLocked() const
+{
+    if (!this->hasSelection())
+        return false;
+    return this->items_[this->selected_].locked;
+}
+
+ReticleShape ReticleSet::cycleSelectedShape()
+{
+    if (!this->hasSelection())
+        return ReticleShape::CROSS;
+    Reticle& item = this->items_[this->selected_];
+    item.shape = (item.shape == ReticleShape::CROSS) ? ReticleShape::X : ReticleShape::CROSS;
+    return item.shape;
 }
 
 void ReticleSet::clear()
@@ -275,7 +316,7 @@ void ReticleSet::nudgeSelected(double dx, double dy, const FrameGeometry& geomet
     if (!this->hasSelection())
         return;
     Reticle& item = this->items_[this->selected_];
-    if (item.centred)
+    if (item.centred || item.locked)
         return;
     // Clamped to the SENSOR, not to the frame. A reticle may legitimately sit outside the current ROI -- that is
     // what makes it survive a ROI change -- so clamping to the visible region would drag marks about every time that
@@ -289,7 +330,10 @@ void ReticleSet::placeSelected(double x, double y, const FrameGeometry& geometry
     if (!this->hasSelection())
         return;
     Reticle& item = this->items_[this->selected_];
-    if (item.centred)
+    // The mouse drag comes through here, so this one guard is what makes a locked mark immovable by pointer as
+    // well as by key. Silently, and on purpose: a drag that refuses is self-explanatory on screen, and printing
+    // a line for every mouse-move sample would flood the console.
+    if (item.centred || item.locked)
         return;
     item.x = clampTo(x, 0.0, sensorLimit(geometry.sensor_width));
     item.y = clampTo(y, 0.0, sensorLimit(geometry.sensor_height));
@@ -382,9 +426,13 @@ bool ReticleSet::save(const std::string& path) const
     if (!file)
         return false;
 
-    file << "# DegorasASI live-view reticles, version 2.\n"
+    // Version 3 adds shape and locked. The format stays a bag of key=value pairs and the loader ignores keys it
+    // does not know, so a version-3 file loads in an older build (minus the two new settings) and a version-2
+    // file loads here (the two default to an unlocked cross). Neither direction needs a migration.
+    file << "# DegorasASI live-view reticles, version 3.\n"
          << "# One reticle per line. Coordinates are SENSOR pixels and may be fractional; a centred reticle ignores\n"
-         << "# x and y and follows the frame centre. circles is a comma-separated list of radii, or absent for none.\n";
+         << "# x and y and follows the frame centre. circles is a comma-separated list of radii, or absent for none.\n"
+         << "# shape is cross or x; locked=1 refuses movement and deletion. Both are absent when at their default.\n";
 
     file << std::fixed << std::setprecision(2);
     for (const Reticle& item : this->items_)
@@ -396,6 +444,11 @@ bool ReticleSet::save(const std::string& path) const
             file << " x=" << item.x << " y=" << item.y;
         file << " gap=" << item.gap << " thickness=" << item.thickness
              << " colour=" << item.red << "," << item.green << "," << item.blue;
+        // Written only when not at the default, so an ordinary file stays as short and as readable as it was.
+        if (item.shape != ReticleShape::CROSS)
+            file << " shape=x";
+        if (item.locked)
+            file << " locked=1";
         if (!item.circles.empty())
         {
             file << " circles=";
@@ -443,6 +496,9 @@ bool ReticleSet::load(const std::string& path)
                 else if (key == "thickness") item.thickness = clampInt(std::stoi(value), kMinThickness,
                                                                       kMaxThickness);
                 else if (key == "centred")   item.centred = (value != "0");
+                else if (key == "locked")    item.locked = (value != "0");
+                else if (key == "shape")     item.shape = (value == "x" || value == "X") ? ReticleShape::X
+                                                                                         : ReticleShape::CROSS;
                 else if (key == "circles")   item.circles = parseRadii(value);
                 else if (key == "colour" || key == "color")
                 {

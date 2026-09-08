@@ -1179,7 +1179,11 @@ void LiveView::drawReticles(cv::Mat& image) const
         // the mark is out there at that height.
         const bool row_crosses = (cy >= 0.0) && (cy <= image.rows - 1.0);
         const bool column_crosses = (cx >= 0.0) && (cx <= image.cols - 1.0);
-        if (!row_crosses && !column_crosses && item.circles.empty())
+        // The cull is sound for an upright cross, whose arms lie exactly on that row and that column, and is NOT
+        // sound for a diagonal one: an X centred off the picture can still have both arms crossing it. Rather
+        // than work out where, the X is simply never culled -- clipping is cheaper than deciding, the same trade
+        // the circles below already make.
+        if (item.shape == ReticleShape::CROSS && !row_crosses && !column_crosses && item.circles.empty())
             continue;
 
         const bool chosen = this->reticles_.hasSelection() && this->reticles_.selected() == i;
@@ -1195,19 +1199,46 @@ void LiveView::drawReticles(cv::Mat& image) const
         // Four segments rather than two crossing lines: the central gap is the point of this shape, so the photosite
         // being marked is never covered by the mark. Where the centre lies outside the picture the near segment
         // simply collapses and the far one spans the whole edge, which is what clipping gives for free.
-        if (row_crosses)
+        if (item.shape == ReticleShape::CROSS)
         {
-            cv::line(image, cv::Point(0, fy), cv::Point(fx - gap, fy), colour, thickness,
-                     cv::LINE_AA, kSubPixelShift);
-            cv::line(image, cv::Point(fx + gap, fy), cv::Point(last_column, fy), colour, thickness,
-                     cv::LINE_AA, kSubPixelShift);
+            if (row_crosses)
+            {
+                cv::line(image, cv::Point(0, fy), cv::Point(fx - gap, fy), colour, thickness,
+                         cv::LINE_AA, kSubPixelShift);
+                cv::line(image, cv::Point(fx + gap, fy), cv::Point(last_column, fy), colour, thickness,
+                         cv::LINE_AA, kSubPixelShift);
+            }
+            if (column_crosses)
+            {
+                cv::line(image, cv::Point(fx, 0), cv::Point(fx, fy - gap), colour, thickness,
+                         cv::LINE_AA, kSubPixelShift);
+                cv::line(image, cv::Point(fx, fy + gap), cv::Point(fx, last_row), colour, thickness,
+                         cv::LINE_AA, kSubPixelShift);
+            }
         }
-        if (column_crosses)
+        else
         {
-            cv::line(image, cv::Point(fx, 0), cv::Point(fx, fy - gap), colour, thickness,
-                     cv::LINE_AA, kSubPixelShift);
-            cv::line(image, cv::Point(fx, fy + gap), cv::Point(fx, last_row), colour, thickness,
-                     cv::LINE_AA, kSubPixelShift);
+            // The same mark turned through 45 degrees: four rays from the centre outwards, same gap, spanning the
+            // canvas. The gap is scaled by one over root two along each axis so the blank RADIUS matches the
+            // cross's -- without it the diagonal's clear centre would be forty per cent larger for the same
+            // setting, and switching shape would look like it had also changed the gap.
+            //
+            // The reach is simply width plus height, which always leaves the canvas whatever the aspect ratio and
+            // wherever the centre sits. Clipping does the rest, so there is no intersection to compute and no
+            // special case for a centre off the picture.
+            const double gap_axis = item.gap * size_scale * 0.70710678118654752;
+            const double reach = static_cast<double>(image.cols) + static_cast<double>(image.rows);
+
+            for (int step_x = -1; step_x <= 1; step_x += 2)
+            {
+                for (int step_y = -1; step_y <= 1; step_y += 2)
+                {
+                    cv::line(image,
+                             cv::Point(toFixed(cx + step_x * gap_axis), toFixed(cy + step_y * gap_axis)),
+                             cv::Point(toFixed(cx + step_x * reach), toFixed(cy + step_y * reach)),
+                             colour, thickness, cv::LINE_AA, kSubPixelShift);
+                }
+            }
         }
 
         // Not culled: a circle whose centre is off the picture can still have an arc on it, and clipping is cheaper
@@ -1222,6 +1253,16 @@ void LiveView::drawReticles(cv::Mat& image) const
             const int handle = toFixed((item.gap + 4.0) * size_scale);
             cv::rectangle(image, cv::Point(fx - handle, fy - handle), cv::Point(fx + handle, fy + handle),
                           cv::Scalar(255, 255, 255), 1, cv::LINE_AA, kSubPixelShift);
+
+            // A locked selection gets a second square around the first. Two concentric boxes read as clamped at a
+            // glance and, unlike a colour change, survive the reticle being any colour it likes -- including the
+            // white the handle itself is drawn in.
+            if (item.locked)
+            {
+                const int outer = toFixed((item.gap + 7.0) * size_scale);
+                cv::rectangle(image, cv::Point(fx - outer, fy - outer), cv::Point(fx + outer, fy + outer),
+                              cv::Scalar(255, 255, 255), 1, cv::LINE_AA, kSubPixelShift);
+            }
         }
     }
 }

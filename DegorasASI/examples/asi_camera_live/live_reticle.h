@@ -112,12 +112,29 @@ void frameToSensor(const FrameGeometry& geometry, double x, double y, double& se
 double sensorToFrameScale(const FrameGeometry& geometry);
 
 /**
- * @brief One aiming mark: a gapped cross plus concentric circles.
+ * @brief The arms of an aiming mark: an upright cross, or the same mark turned through 45 degrees.
+ * @note Both span the whole canvas and keep the central gap. Which one reads better depends on the scene: the
+ *       upright cross shares its direction with the sensor rows and columns, so it hides whatever sits on the
+ *       row and the column of the marked point -- exactly the pixels a drift measurement often cares about. The
+ *       diagonal leaves those clear and is easier to tell apart from a star's diffraction spikes, which are
+ *       themselves usually upright.
+ */
+enum class ReticleShape
+{
+    CROSS = 0,   ///< Horizontal and vertical arms. The default.
+    X     = 1,   ///< Two diagonal arms at 45 degrees.
+};
+
+/// @brief The shape's name for the interface: "cross" or "X".
+const char* toString(ReticleShape shape);
+
+/**
+ * @brief One aiming mark: a gapped cross or X, plus concentric circles.
  * @note Defaults live in the constructor, so this header stays a description of the type.
  */
 struct Reticle
 {
-    /// @brief Establishes a red, one-pixel reticle at the origin, with a legible gap and no circles.
+    /// @brief Establishes a red, one-pixel, unlocked cross at the origin, with a legible gap and no circles.
     Reticle();
 
     double x;                       ///< Absolute sensor column, unbinned, sub-pixel. Ignored while centred.
@@ -128,6 +145,8 @@ struct Reticle
     int green;                      ///< Colour, green component, 0 to 255.
     int blue;                       ///< Colour, blue component, 0 to 255.
     bool centred;                   ///< Follows the frame centre instead of x,y, so a geometry change cannot strand it.
+    ReticleShape shape;             ///< Upright cross or diagonal X. Purely how it is drawn; the centre is the same.
+    bool locked;                    ///< Refuses to move or be deleted. See ReticleSet::toggleSelectedLock.
     std::vector<double> circles;    ///< Radii of the concentric circles, in unbinned sensor pixels. May be empty.
 };
 
@@ -194,8 +213,11 @@ public:
     bool removeCentred();
 
     /**
-     * @brief Removes the selected reticle.
-     * @return True when one was removed.
+     * @brief Removes the selected reticle, unless it is locked.
+     * @return True when one was removed; false when there is no selection OR the selection is locked.
+     * @note A lock refuses deletion as well as movement, and deliberately so: a mark is locked because it was
+     *       aligned once and must not change, and losing it outright is a worse accident than nudging it. Call
+     *       isSelectedLocked() to tell the two false results apart and say which happened.
      */
     bool removeSelected();
 
@@ -242,6 +264,30 @@ public:
      * @note A centred reticle is not moved, for the same reason as nudgeSelected().
      */
     void placeSelected(double x, double y, const FrameGeometry& geometry);
+
+    /**
+     * @brief Locks or unlocks the selected reticle.
+     * @return The state it ends in: true when locked. False when there is no selection.
+     * @note A LOCK IS ABOUT POSITION, not appearance. It refuses nudgeSelected(), placeSelected() -- which is
+     *       what the mouse drag goes through, so one guard covers both -- and removeSelected(). Colour, gap,
+     *       thickness, shape and circles stay editable, because changing how a mark looks does not move it and
+     *       having to unlock to recolour would make the lock a nuisance rather than a safeguard.
+     */
+    bool toggleSelectedLock();
+
+    /**
+     * @brief Whether the selected reticle is locked.
+     * @return False when nothing is selected.
+     */
+    bool isSelectedLocked() const;
+
+    /**
+     * @brief Advances the selected reticle to the next shape, wrapping round.
+     * @return The shape it ends on; ReticleShape::CROSS when there is no selection.
+     * @note A cycle rather than a pair of keys, for the reason given at the top of live_controller.cpp: the Qt
+     *       backend of highgui discards the case of a letter, so nothing here may depend on shift.
+     */
+    ReticleShape cycleSelectedShape();
 
     /**
      * @brief Changes the selected reticle's central gap.

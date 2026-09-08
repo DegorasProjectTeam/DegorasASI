@@ -156,7 +156,11 @@ Options::Options() :
     stretch(false),
     snap(0),
     snap_name("live_snap"),
-    format("RGB24"),
+    // EMPTY MEANS "ASK THE CAMERA", not RGB24. This used to default to RGB24 outright, and on a MONO camera the
+    // example then refused to start at all -- "This camera cannot deliver RGB24." -- which is a correct check
+    // reporting a wrong default. No ASI mono sensor supports RGB24: the SDK only offers it where there is a
+    // Bayer mosaic to demosaic. The choice is made after the descriptor is read; see chooseDefaultFormat().
+    format(""),
     reticles("live_reticles.txt"),
     zoom(1.0),
     flip(),
@@ -174,7 +178,8 @@ void printUsage()
         "  --exposure MS   initial exposure in milliseconds (default 30)\n"
         "  --gain N        initial gain (default 200)\n"
         "  --bin N         binning factor (default 1). Binning destroys the Bayer mosaic, so bin > 1 is always mono\n"
-        "  --format F      RGB24, RAW8, RAW16 or Y8 (default RGB24)\n"
+        "  --format F      RGB24, RAW8, RAW16 or Y8. Default: the best the camera offers -- RGB24 on a colour\n"
+    "                  sensor, RAW16 on a mono one. No ASI mono camera supports RGB24\n"
         "  --camera ID     camera index; default is the first one found\n"
         "  --no-demosaic   show raw Bayer frames as they are, without interpolating colour\n"
         "  --stretch       start with the percentile auto-stretch on  (default: on for RAW16, off otherwise)\n"
@@ -231,6 +236,44 @@ bool formatFromName(const std::string& name, types::ImageFormat& format)
     else if (name == "Y8")    format = types::ImageFormat::Y8;
     else return false;
     return true;
+}
+
+/**
+ * @brief The best format this particular camera can actually deliver, when the user named none.
+ *
+ * ASKING THE CAMERA IS THE WHOLE POINT, and it is the rule the library itself is built on: a colour ASI and a
+ * mono ASI expose the same C API and differ only in what they report at run time. RGB24 exists solely to hand
+ * back a demosaiced frame, so the SDK offers it on Bayer sensors and on no others -- which is why hard-coding it
+ * turned a cooled mono camera into an example that would not start.
+ *
+ * The order is by usefulness on screen rather than by preference:
+ *   - RGB24 first on a colour camera, because it arrives already demosaiced and needs no work to look right.
+ *   - RAW16 next, which is where a mono camera normally lands: the full well depth, and the live view's
+ *     percentile auto-stretch is designed for exactly this.
+ *   - RAW8 then Y8 as fallbacks for a sensor that offers neither of the above.
+ *
+ * @param camera A connected camera.
+ * @return The chosen format, and true; or false when the camera reports supporting none of the four, which
+ *         should not happen and is worth saying out loud rather than guessing at.
+ */
+bool chooseDefaultFormat(AsiCamera& camera, types::ImageFormat& chosen)
+{
+    const types::ImageFormat order[] = {
+        types::ImageFormat::RGB24,
+        types::ImageFormat::RAW16,
+        types::ImageFormat::RAW8,
+        types::ImageFormat::Y8,
+    };
+
+    for (types::ImageFormat candidate : order)
+    {
+        if (camera.supportsFormat(candidate))
+        {
+            chosen = candidate;
+            return true;
+        }
+    }
+    return false;
 }
 
 std::string fixed1(double v)
@@ -326,8 +369,11 @@ int main(int argc, char** argv)
     if (!parseArgs(argc, argv, opt))
         return 1;
 
+    // An empty --format means "whatever this camera does best", and that cannot be decided until it is open. A
+    // NAMED format is still validated here, before anything is opened, so a typo fails immediately.
     types::ImageFormat format = types::ImageFormat::RGB24;
-    if (!formatFromName(opt.format, format))
+    const bool format_named = !opt.format.empty();
+    if (format_named && !formatFromName(opt.format, format))
     {
         std::cout << "Unknown format '" << opt.format << "'. Use RGB24, RAW8, RAW16 or Y8.\n";
         return 1;
@@ -372,12 +418,28 @@ int main(int argc, char** argv)
     if (!camera.isLinkFullSpeed())
         std::cout << "WARNING: USB3 camera on a USB2 host; expect a lower frame rate.\n";
 
-    if (!camera.supportsFormat(format))
+    if (!format_named && !chooseDefaultFormat(camera, format))
     {
-        std::cout << "This camera cannot deliver " << opt.format << ".\n";
+        std::cout << "This camera reports none of RGB24, RAW16, RAW8 or Y8, which should not happen.\n";
         camera.doDisconnect();
         return 1;
     }
+
+    if (!camera.supportsFormat(format))
+    {
+        // What it CAN do, not just what it cannot. Asking a mono camera for RGB24 is the common case here, and
+        // the difference between a dead end and an obvious next command is this one line.
+        std::cout << "This camera cannot deliver " << opt.format << ".\n"
+                  << "It offers:";
+        for (types::ImageFormat available : desc.supported_formats)
+            std::cout << " " << types::toString(available);
+        std::cout << "\nOmit --format and the best one is chosen for you.\n";
+        camera.doDisconnect();
+        return 1;
+    }
+
+    if (!format_named)
+        std::cout << "format: " << types::toString(format) << " (chosen for this camera; override with --format)\n";
 
     // -- Configure -----------------------------------------------------------------------------------------------------
     if (camera.doSetFullFrameRoi(format, opt.bin) != OperationResult::OPERATION_OK)

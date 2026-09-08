@@ -135,6 +135,8 @@ private:
         THINNER,           ///< Thin them.
         ADD_CIRCLE,        ///< Add a circle to the selected reticle.
         REMOVE_CIRCLE,     ///< Take its outermost circle away.
+        TOGGLE_LOCK,       ///< Lock or unlock the selected reticle against movement and deletion.
+        CYCLE_SHAPE,       ///< Switch the selected reticle between an upright cross and a diagonal X.
     };
 
     /// @brief One entry of the menu the view is currently showing.

@@ -313,12 +313,22 @@ void LiveController::openMenuAt(int canvas_x, int canvas_y)
         add("Add centred reticle", MenuAction::ADD_CENTRED, -1);
 
     if (on_reticle)
-        add("Delete this reticle", MenuAction::DELETE_SELECTED, -1);
+    {
+        // Labelled rather than hidden when locked. An item that vanishes reads as a bug; one that says why it
+        // will refuse teaches the lock exists, and the entry right below it is how to undo that.
+        add(set.isSelectedLocked() ? "Delete this reticle (locked)" : "Delete this reticle",
+            MenuAction::DELETE_SELECTED, -1);
+    }
     if (set.size() > 0)
         add("Delete all reticles", MenuAction::DELETE_ALL, -1);
 
     if (set.hasSelection())
     {
+        addSeparator();
+        add(set.isSelectedLocked() ? "Unlock this reticle" : "Lock this reticle", MenuAction::TOGGLE_LOCK, -1);
+        add(std::string("Shape: ") + toString(set.at(set.selected()).shape) + " (change)",
+            MenuAction::CYCLE_SHAPE, -1);
+
         addSeparator();
         add("Thicker line", MenuAction::THICKER, -1);
         add("Thinner line", MenuAction::THINNER, -1);
@@ -375,7 +385,18 @@ void LiveController::applyMenuChoice(int index)
             return;
 
         case MenuAction::DELETE_SELECTED:
-            set.removeSelected();
+            if (!set.removeSelected() && set.isSelectedLocked())
+                std::cout << "  that reticle is LOCKED; unlock it first\n";
+            return;
+
+        case MenuAction::TOGGLE_LOCK:
+            std::cout << "  reticle " << (set.selected() + 1) << ": "
+                      << (set.toggleSelectedLock() ? "LOCKED (will not move or be deleted)" : "unlocked") << "\n";
+            return;
+
+        case MenuAction::CYCLE_SHAPE:
+            std::cout << "  reticle " << (set.selected() + 1) << " shape: "
+                      << toString(set.cycleSelectedShape()) << "\n";
             return;
 
         case MenuAction::DELETE_ALL:
@@ -509,8 +530,30 @@ bool LiveController::handleKey(int key, types::Frame& frame, const cv::Mat& disp
 
         case kKeyDelete:
         case kKeyBackspace:
+            // removeSelected() returns false for two different reasons and the difference matters to whoever is
+            // pressing the key: nothing selected is a miss, a locked mark is a refusal. Saying so is what stops
+            // the lock looking like the delete key has stopped working.
             if (set.removeSelected())
                 std::cout << "  reticle removed, " << set.size() << " left\n";
+            else if (set.isSelectedLocked())
+                std::cout << "  that reticle is LOCKED; press B to unlock it first\n";
+            return true;
+
+        case 'b':
+            if (set.hasSelection())
+                std::cout << "  reticle " << (set.selected() + 1) << ": "
+                          << (set.toggleSelectedLock() ? "LOCKED (will not move or be deleted)" : "unlocked")
+                          << "\n";
+            else
+                std::cout << "  select a reticle first; click it or press TAB\n";
+            return true;
+
+        case 'r':
+            if (set.hasSelection())
+                std::cout << "  reticle " << (set.selected() + 1) << " shape: "
+                          << toString(set.cycleSelectedShape()) << "\n";
+            else
+                std::cout << "  select a reticle first; click it or press TAB\n";
             return true;
 
         case 'f':
@@ -704,14 +747,16 @@ void LiveController::printKeys() const
         "  M              flip: none -> horizontal -> vertical -> both -> none\n"
         "  T              rotate 90 degrees clockwise (four presses come back round)\n"
         "\n"
-        "Reticles: a full-span crosshair with a central gap, in sensor coordinates and sub-pixel.\n"
-        "  right-click    MENU: add here, add centred, delete, colour, thickness, circles\n"
+        "Reticles: a full-span cross or X with a central gap, in sensor coordinates and sub-pixel.\n"
+        "  right-click    MENU: add here, add centred, delete, lock, shape, colour, thickness, circles\n"
         "  V              show / hide every reticle\n"
         "  X              add / remove the CENTRED reticle\n"
         "  N              new reticle where the cursor is\n"
         "  click          select the reticle under the cursor; drag to move it\n"
         "  TAB            select the next reticle\n"
-        "  DEL / BACKSPC  remove the selected reticle\n"
+        "  DEL / BACKSPC  remove the selected reticle (refused while it is locked)\n"
+        "  B              lock / unlock it: a locked reticle will not move, drag or be deleted\n"
+        "  R              shape: upright cross <-> diagonal X\n"
         "  arrows         move the selected reticle\n"
         "  F              fine step: 0.1 px instead of 1 px\n"
         "  C              next colour (red, green, cyan, yellow, magenta, white, black)\n"
