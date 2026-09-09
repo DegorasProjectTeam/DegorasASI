@@ -178,11 +178,62 @@ LiveController::LiveController(LiveModel& model, LiveView& view) :
     shots_(0),
     fine_(false),
     reticle_file_(),
-    menu_entries_()
+    menu_entries_(),
+    entry_target_(EntryTarget::NONE),
+    grabbed_(false),
+    grab_dx_(0.0),
+    grab_dy_(0.0)
 {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+
+void LiveController::applyEntry()
+{
+    std::string text;
+    if (!this->view_.takeEntry(text))
+        return;
+
+    const EntryTarget target = this->entry_target_;
+    this->entry_target_ = EntryTarget::NONE;
+
+    if (text.empty())
+        return;
+
+    double value = 0.0;
+    try
+    {
+        value = std::stod(text);
+    }
+    catch (const std::exception&)
+    {
+        // The box only accepts digits and one point, so this needs a lone "." or an overflowing run of digits to
+        // happen at all. Saying so beats setting something arbitrary.
+        std::cout << "  '" << text << "' is not a number I can use\n";
+        return;
+    }
+
+    if (target == EntryTarget::EXPOSURE)
+    {
+        // MILLISECONDS, matching the HUD, the slider and the --exposure switch. Microseconds would be the
+        // camera's own unit and the wrong one to ask a person for: every value anybody types here has three
+        // zeroes on the end of it.
+        const long long microseconds = static_cast<long long>(value * 1000.0);
+        if (microseconds <= 0)
+        {
+            std::cout << "  exposure must be greater than zero\n";
+            return;
+        }
+        this->model_.requestExposure(microseconds);
+        this->view_.showExposureOnSlider(microseconds);
+        std::cout << "  exposure set to " << value << " ms\n";
+    }
+    else if (target == EntryTarget::GAIN)
+    {
+        this->model_.requestGain(static_cast<long long>(value));
+        std::cout << "  gain set to " << static_cast<long long>(value) << "\n";
+    }
+}
 
 void LiveController::pumpSliders()
 {
@@ -249,14 +300,32 @@ void LiveController::pumpMouse()
         // A press that lands nowhere near a reticle DESELECTS rather than creating one. Creation is a key, so that
         // clicking on the image to look at something cannot leave a mark behind.
         if (!set.selectNear(sensor_x, sensor_y, geometry, kGrabRadius))
+        {
             set.deselect();
+            this->grabbed_ = false;
+        }
+        else
+        {
+            // Remember where inside the mark the press landed. Everything after this moves the mark BY the
+            // pointer's travel rather than TO the pointer, so selecting one does not shift it -- which was the
+            // whole complaint: a click merely to select, before locking, nudged the mark by up to the grab
+            // radius and undid the alignment it was about to protect.
+            double centre_x = 0.0;
+            double centre_y = 0.0;
+            this->view_.reticles().resolvePosition(set.selected(), geometry, centre_x, centre_y);
+            this->grab_dx_ = centre_x - sensor_x;
+            this->grab_dy_ = centre_y - sensor_y;
+            this->grabbed_ = true;
+        }
     }
 
-    // Held button plus a selection is a drag. It snaps the reticle centre to the cursor rather than preserving the
-    // grab offset, which is the right trade for a viewfinder: coarse placement is the mouse's job and the keyboard
-    // does the part that needs precision.
+    // Held button plus a grabbed selection is a drag, offset preserved.
     // Not while the menu is open: the press that chose an item must not also drag whatever is under it.
-    if (this->view_.mouseHeld() && set.hasSelection() && !this->view_.menuOpen())
+    if (!this->view_.mouseHeld())
+    {
+        this->grabbed_ = false;
+    }
+    else if (this->grabbed_ && set.hasSelection() && !this->view_.menuOpen())
     {
         int cursor_x = 0;
         int cursor_y = 0;
@@ -265,7 +334,7 @@ void LiveController::pumpMouse()
             double sensor_x = 0.0;
             double sensor_y = 0.0;
             frameToSensor(geometry, cursor_x, cursor_y, sensor_x, sensor_y);
-            set.placeSelected(sensor_x, sensor_y, geometry);
+            set.placeSelected(sensor_x + this->grab_dx_, sensor_y + this->grab_dy_, geometry);
         }
     }
 }
@@ -476,6 +545,16 @@ std::string LiveController::selectedReticleText() const
 
 bool LiveController::handleKey(int key, types::Frame& frame, const cv::Mat& display)
 {
+    // THE TYPED BOX SWALLOWS EVERYTHING while it is open, and that is the point rather than an oversight. The
+    // digits are exposure and gain shortcuts in the normal map, so without this a value could not be typed at
+    // all: pressing 3 would drop the gain instead of entering a three.
+    if (this->view_.entryOpen())
+    {
+        this->view_.entryKey(key);
+        this->applyEntry();
+        return true;
+    }
+
     // Reticles first, so their keys are handled whatever the rest of the map does.
     ReticleSet& set = this->view_.reticles();
     const FrameGeometry& geometry = this->view_.geometry();
@@ -670,6 +749,32 @@ bool LiveController::handleKey(int key, types::Frame& frame, const cv::Mat& disp
 
         // THE CAMERA CONTROLS, one digit per direction. These only enqueue: during a long exposure the change lands
         // on the next frame, and the HUD shows the value read back from the camera when it does.
+        case 'e':
+        {
+            // Milliseconds, with one decimal place available for the sub-millisecond end the slider gave up.
+            const double lo_ms = static_cast<double>(this->view_.exposureMinUs()) / 1000.0;
+            const double hi_ms = static_cast<double>(this->view_.exposureMaxUs()) / 1000.0;
+            std::ostringstream hint;
+            hint << "milliseconds, " << fixed1(lo_ms) << " to " << static_cast<long long>(hi_ms);
+            this->entry_target_ = EntryTarget::EXPOSURE;
+            this->view_.openEntry("Exposure:", hint.str());
+            return true;
+        }
+
+        case 'g':
+        {
+            std::ostringstream hint;
+            hint << "0 to " << this->view_.gainMax();
+            this->entry_target_ = EntryTarget::GAIN;
+            this->view_.openEntry("Gain:", hint.str());
+            return true;
+        }
+
+        case 'w':
+            this->view_.cycleExposureBand();
+            std::cout << "  exposure slider band: " << this->view_.exposureBandName() << "\n";
+            return true;
+
         case '1': this->model_.requestExposureScale(kExposureDown); return true;
         case '2': this->model_.requestExposureScale(kExposureUp);   return true;
 
@@ -732,6 +837,9 @@ void LiveController::printKeys() const
         "\n"
         "Camera (a change during a long exposure lands on the NEXT frame; the HUD shows the value read back):\n"
         "  1 / 2          exposure -10% / +10%   (multiplicative: a fixed step is useless across us..s)\n"
+        "  E              type an exposure, in milliseconds, into a box\n"
+        "  G              type a gain into a box\n"
+        "  W              exposure slider band: 1-100 ms -> 0.1-2 s -> 2-60 s -> round again\n"
         "  3 / 4          gain     -10  / +10\n"
         "  5 / 6          WB red   -1   / +1     (colour cameras only)\n"
         "  7 / 8          WB blue  -1   / +1\n"

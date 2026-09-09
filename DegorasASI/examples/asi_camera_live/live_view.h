@@ -121,12 +121,17 @@ public:
     bool isOpen() const;
 
     /**
-     * @brief Adds the exposure slider, mapped logarithmically.
+     * @brief Adds the exposure slider: linear, in whole milliseconds, over one band at a time.
      * @param minimum_us Smallest exposure the camera accepts, in microseconds.
      * @param maximum_us Largest exposure the camera accepts, in microseconds.
-     * @param current_us Where to place the handle initially.
-     * @note Logarithmic because exposure spans microseconds to seconds: on a linear slider the entire usable range of
-     *       a bright target occupies the first pixel.
+     * @param current_us Where to place the handle initially; its band is selected to match.
+     * @note It was one logarithmic bar across the camera's entire range, and on an ASI224MC that range is 32 us
+     *       to 2000 SECONDS. Eight orders of magnitude on a few hundred pixels left the part anybody uses as a
+     *       sliver that could not be aimed. Banding trades reach for resolution, and the typed box covers what
+     *       the bands do not.
+     * @note The position IS the exposure in milliseconds. highgui prints a trackbar's raw position and gives no
+     *       way to label it, so with a logarithmic mapping the bar read "743" while the HUD above it read
+     *       "250.0 ms" -- two numbers for one setting. One to one is what makes them agree.
      */
     void addExposureSlider(long long minimum_us, long long maximum_us, long long current_us);
 
@@ -136,6 +141,33 @@ public:
      * @param current Where to place the handle initially.
      */
     void addGainSlider(long long maximum, long long current);
+
+    /**
+     * @brief Moves the exposure slider to the next band, wrapping round.
+     * @note The slider covers one band at a time -- 1 to 100 ms, 0.1 to 2 s, 2 to 60 s -- because the camera's
+     *       own range spans microseconds to over half an hour and a single bar across it cannot be aimed. Each
+     *       band is clamped to what the camera actually accepts, so a shorter-range model simply gets shorter
+     *       bands. The typed box reaches anything a band does not.
+     */
+    void cycleExposureBand();
+
+    /// @brief The current band's name, for the HUD: "1-100 ms", "0.1-2 s" or "2-60 s".
+    std::string exposureBandName() const;
+
+    /// @brief Smallest exposure the camera reported, in microseconds. Zero before addExposureSlider() has run.
+    long long exposureMinUs() const;
+
+    /// @brief Largest exposure the camera reported, in microseconds.
+    long long exposureMaxUs() const;
+
+    /// @brief Largest gain the camera reported. Zero before addGainSlider() has run.
+    long long gainMax() const;
+
+    /**
+     * @brief Puts an exposure on the slider, switching band if it belongs to another one.
+     * @param microseconds The value to show. Not sent to the camera; this only moves the widget.
+     */
+    void showExposureOnSlider(long long microseconds);
 
     /**
      * @brief Moves the sliders to match the camera, without that movement being read back as a user request.
@@ -327,6 +359,37 @@ public:
     bool takeMenuChoice(int& index);
 
     /**
+     * @brief Opens a one-line box for typing a number, drawn on the canvas.
+     * @param label  What is being set, shown to the left of the field. Keep it short.
+     * @param hint   Units and range, shown underneath, e.g. "microseconds, 32 to 2000000000".
+     * @note highgui has no text field -- it offers a window, trackbars and a mouse callback and nothing else --
+     *       so this is drawn by hand like the context menu, and fed by the key loop rather than by a widget.
+     *       While it is open the controller sends every key here instead of to the command map, which is what
+     *       lets digits be digits rather than the exposure and gain shortcuts they normally are.
+     */
+    void openEntry(const std::string& label, const std::string& hint);
+
+    /// @brief Whether the typing box is on screen and swallowing keys.
+    bool entryOpen() const;
+
+    /**
+     * @brief Feeds one key to the box.
+     * @param key The key code as cv::waitKeyEx reported it.
+     * @return True when the box handled it, which is every key while it is open.
+     */
+    bool entryKey(int key);
+
+    /**
+     * @brief Takes the finished text, once, and closes the box.
+     * @param text Receives what was typed, which may be empty.
+     * @return True only on the iteration the user pressed Enter.
+     */
+    bool takeEntry(std::string& text);
+
+    /// @brief Closes the box without producing a value.
+    void closeEntry();
+
+    /**
      * @brief Where the menu was opened, in FRAME coordinates.
      * @param x Receives the column.
      * @param y Receives the row.
@@ -444,6 +507,9 @@ private:
     /// @brief Draws the context menu, when it is open.
     void drawMenu(cv::Mat& image) const;
 
+    /// @brief Paints the typed box, when one is open. Drawn last so nothing can cover it.
+    void drawEntry(cv::Mat& image) const;
+
     /// @brief Writes the flipped and rotated version of a canvas into another, which may be transposed.
     void applyOrientation(const cv::Mat& source, cv::Mat& target) const;
 
@@ -497,6 +563,12 @@ private:
     int menu_frame_y_;           ///< Where the menu was opened, frame row.
     bool menu_anchor_valid_;     ///< Whether that frame position is usable.
     std::vector<std::string> menu_items_;   ///< The labels, as the controller supplied them.
+
+    bool entry_open_;            ///< Whether the typing box is showing and swallowing keys.
+    bool entry_done_;            ///< Set by Enter, cleared by takeEntry(), so a value is delivered exactly once.
+    std::string entry_label_;    ///< What is being set.
+    std::string entry_hint_;     ///< Units and range, so the box says what it will accept.
+    std::string entry_text_;     ///< What has been typed so far.
     mutable int menu_highlight_;            ///< Item under the pointer, or -1.
     int menu_choice_;                       ///< Item chosen and not yet consumed, or -1.
     double zoom_;                ///< 1.0 shows the whole frame; higher magnifies.

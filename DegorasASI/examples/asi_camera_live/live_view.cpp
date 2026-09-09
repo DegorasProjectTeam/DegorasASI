@@ -57,9 +57,42 @@ namespace
 // view's take*Request() methods serialise: they read and clear the flag in one call, and a movement lost to a race
 // would only mean the slider is read one frame later.
 
+// THE EXPOSURE SLIDER IS BANDED, AND IN MILLISECONDS, and both halves of that are fixes.
+//
+// It used to be one logarithmic slider across the camera's whole range. On the ASI224MC that range is 32 us to
+// 2000 SECONDS -- eight orders of magnitude on a widget a few hundred pixels wide -- so the part anyone actually
+// uses, a tenth of a second to a couple of seconds, occupied a sliver of it and could not be set by hand.
+//
+// It also read in slider POSITIONS. highgui prints the raw position next to a trackbar and offers no way to
+// label it, so the bar underneath said "743" while the HUD above said "exp 250.0 ms". Two numbers for one
+// setting, neither obviously related to the other. Now the position IS the exposure in milliseconds, so the two
+// agree by construction rather than by arithmetic.
+//
+// The cost is the sub-millisecond end, which no longer has a slider. That is what the typed box is for, and it
+// reaches the full range the camera reports.
+struct ExposureBand
+{
+    const char* name;
+    long long min_us;
+    long long max_us;
+};
+
+const ExposureBand kExposureBands[] = {
+    { "1-100 ms",  1000LL,     100000LL   },
+    { "0.1-2 s",   100000LL,   2000000LL  },   // the default: the band this example is normally used in
+    { "2-60 s",    2000000LL,  60000000LL },
+};
+
+constexpr int kExposureBandCount = static_cast<int>(sizeof(kExposureBands) / sizeof(kExposureBands[0]));
+constexpr int kDefaultExposureBand = 1;
+
+/// highgui addresses a trackbar by its label, so the three call sites share one spelling.
+const char* const kExposureBarName = "exposure ms";
+
 struct SliderState
 {
     int exposure_pos = 0;
+    int exposure_band = kDefaultExposureBand;   ///< Index into kExposureBands; the slider spans only this band.
     int gain_pos = 0;
     bool exposure_moved = false;
     bool gain_moved = false;
@@ -91,8 +124,6 @@ SliderState& sliders()
     return state;
 }
 
-/// Resolution of the logarithmic exposure slider. Fine enough that a step is imperceptible across the whole range.
-constexpr int kExposureSteps = 1000;
 
 /// How far the pointer may travel with the right button down and still count as a click rather than a pan.
 constexpr int kRightClickSlop = 4;
@@ -128,22 +159,42 @@ double millisSinceRender(const std::chrono::steady_clock::time_point& then)
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - then).count();
 }
 
+/// @brief The slider position, in whole milliseconds, that an exposure corresponds to. One to one, on purpose.
 long long sliderToExposure(int pos)
 {
+    return static_cast<long long>(pos) * 1000LL;
+}
+
+/// @brief The band's limits in whole milliseconds, clamped to what the camera actually accepts.
+void bandLimitsMs(int band, int& low_ms, int& high_ms)
+{
     const SliderState& s = sliders();
-    const double lo = std::log(static_cast<double>(std::max<long long>(1, s.exposure_min)));
-    const double hi = std::log(static_cast<double>(std::max<long long>(2, s.exposure_max)));
-    const double t = static_cast<double>(pos) / kExposureSteps;
-    return static_cast<long long>(std::exp(lo + t * (hi - lo)));
+    const int index = std::clamp(band, 0, kExposureBandCount - 1);
+
+    const long long low_us = std::max(kExposureBands[index].min_us, s.exposure_min);
+    const long long high_us = std::min(kExposureBands[index].max_us, s.exposure_max);
+
+    low_ms = std::max(1, static_cast<int>(low_us / 1000LL));
+    high_ms = std::max(low_ms + 1, static_cast<int>(high_us / 1000LL));
 }
 
 int exposureToSlider(long long microseconds)
 {
-    const SliderState& s = sliders();
-    const double lo = std::log(static_cast<double>(std::max<long long>(1, s.exposure_min)));
-    const double hi = std::log(static_cast<double>(std::max<long long>(2, s.exposure_max)));
-    const double t = (std::log(static_cast<double>(std::max<long long>(1, microseconds))) - lo) / (hi - lo);
-    return std::clamp(static_cast<int>(t * kExposureSteps), 0, kExposureSteps);
+    int low_ms = 1;
+    int high_ms = 2;
+    bandLimitsMs(sliders().exposure_band, low_ms, high_ms);
+    return std::clamp(static_cast<int>(microseconds / 1000LL), low_ms, high_ms);
+}
+
+/// @brief The band an exposure falls in, so typing a value can move the slider to where that value lives.
+int bandForExposure(long long microseconds)
+{
+    for (int i = 0; i < kExposureBandCount; ++i)
+    {
+        if (microseconds <= kExposureBands[i].max_us)
+            return i;
+    }
+    return kExposureBandCount - 1;
 }
 
 void onExposureSlider(int pos, void*)
@@ -269,6 +320,11 @@ LiveView::LiveView(const std::string& title, int frame_width, int frame_height) 
     menu_frame_y_(0),
     menu_anchor_valid_(false),
     menu_items_(),
+    entry_open_(false),
+    entry_done_(false),
+    entry_label_(),
+    entry_hint_(),
+    entry_text_(),
     menu_highlight_(-1),
     menu_choice_(-1),
     zoom_(1.0),
@@ -349,13 +405,200 @@ void LiveView::addExposureSlider(long long minimum_us, long long maximum_us, lon
     sliders().exposure_min = minimum_us;
     sliders().exposure_max = maximum_us;
 
+    // The band the current exposure already sits in, so opening the window does not silently change the setting.
+    sliders().exposure_band = bandForExposure(current_us);
+
+    int low_ms = 1;
+    int high_ms = 2;
+    bandLimitsMs(sliders().exposure_band, low_ms, high_ms);
+
     // nullptr for the value pointer, not the address of an int: highgui deprecated that form because it writes to
     // the int from the GUI thread with no synchronisation. The callback already carries the position.
-    cv::createTrackbar("exposure (log)", this->title_, nullptr, kExposureSteps, onExposureSlider);
+    cv::createTrackbar(kExposureBarName, this->title_, nullptr, high_ms, onExposureSlider);
+    cv::setTrackbarMin(kExposureBarName, this->title_, low_ms);
     sliders().suppress = true;
-    cv::setTrackbarPos("exposure (log)", this->title_, exposureToSlider(current_us));
+    cv::setTrackbarPos(kExposureBarName, this->title_, exposureToSlider(current_us));
     sliders().suppress = false;
     this->has_exposure_slider_ = true;
+}
+
+void LiveView::cycleExposureBand()
+{
+    if (!this->has_exposure_slider_)
+        return;
+
+    SliderState& s = sliders();
+    s.exposure_band = (s.exposure_band + 1) % kExposureBandCount;
+
+    int low_ms = 1;
+    int high_ms = 2;
+    bandLimitsMs(s.exposure_band, low_ms, high_ms);
+
+    // SAVED AND RESTORED rather than forced back to false, because showExposureOnSlider() calls this in a loop
+    // with suppression already on. Forcing it off here would let an intermediate band's clamp be read back as a
+    // user request and overwrite the value that was actually typed.
+    const bool was_suppressed = sliders().suppress;
+
+    // MAX BEFORE MIN, and it matters. Moving to a higher band with the old, lower maximum still in force would
+    // have OpenCV clamp the new minimum down to it; raising the ceiling first leaves room for the floor.
+    sliders().suppress = true;
+    cv::setTrackbarMax(kExposureBarName, this->title_, high_ms);
+    cv::setTrackbarMin(kExposureBarName, this->title_, low_ms);
+    sliders().suppress = was_suppressed;
+
+    // AND NOW PUT THE HANDLE BACK IN RANGE, because highgui does not. Measured against OpenCV 4.12: after
+    // setTrackbarMin(2000) a handle sitting at 250 STAYS at 250, and after setTrackbarMax(100) one at 5000 stays
+    // at 5000. Left alone, the bar would show a number outside its own limits -- which is the exact mismatch
+    // between the bar and the HUD that banding exists to remove.
+    //
+    // Deliberately NOT suppressed. Moving to a band is a statement about what exposure is wanted, so if the
+    // current one is not in it the camera follows the handle, and the two stay in step. When the exposure is
+    // already inside the band nothing changes, setTrackbarPos fires no callback, and the camera is left alone.
+    const int current = cv::getTrackbarPos(kExposureBarName, this->title_);
+    const int clamped = std::clamp(current, low_ms, high_ms);
+    if (clamped != current)
+        cv::setTrackbarPos(kExposureBarName, this->title_, clamped);
+}
+
+std::string LiveView::exposureBandName() const
+{
+    return kExposureBands[std::clamp(sliders().exposure_band, 0, kExposureBandCount - 1)].name;
+}
+
+long long LiveView::exposureMinUs() const
+{
+    return this->exposure_min_;
+}
+
+long long LiveView::exposureMaxUs() const
+{
+    return this->exposure_max_;
+}
+
+long long LiveView::gainMax() const
+{
+    return this->gain_max_;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// THE TYPED BOX
+
+void LiveView::openEntry(const std::string& label, const std::string& hint)
+{
+    this->entry_open_ = true;
+    this->entry_done_ = false;
+    this->entry_label_ = label;
+    this->entry_hint_ = hint;
+    this->entry_text_.clear();
+}
+
+bool LiveView::entryOpen() const
+{
+    return this->entry_open_;
+}
+
+bool LiveView::entryKey(int key)
+{
+    if (!this->entry_open_)
+        return false;
+
+    // Enter commits, Escape abandons, Backspace deletes. Everything else is either a character the field accepts
+    // or ignored outright -- the point of swallowing every key is that a stray letter cannot reach the command
+    // map and change the orientation while somebody is typing a number.
+    if (key == 13 || key == 10)
+    {
+        this->entry_done_ = true;
+        this->entry_open_ = false;
+        return true;
+    }
+    if (key == 27)
+    {
+        this->closeEntry();
+        return true;
+    }
+    if (key == 8 || key == 127)
+    {
+        if (!this->entry_text_.empty())
+            this->entry_text_.pop_back();
+        return true;
+    }
+
+    // Digits and a single decimal point. Signs are pointless here: neither an exposure nor a gain is negative,
+    // and refusing the character is friendlier than accepting it and failing to parse later.
+    const bool digit = (key >= '0' && key <= '9');
+    const bool point = ((key == '.' || key == ',') && this->entry_text_.find('.') == std::string::npos);
+    if ((digit || point) && this->entry_text_.size() < 12)
+        this->entry_text_.push_back(digit ? static_cast<char>(key) : '.');
+
+    return true;
+}
+
+bool LiveView::takeEntry(std::string& text)
+{
+    if (!this->entry_done_)
+        return false;
+    this->entry_done_ = false;
+    text = this->entry_text_;
+    this->entry_text_.clear();
+    return true;
+}
+
+void LiveView::closeEntry()
+{
+    this->entry_open_ = false;
+    this->entry_done_ = false;
+    this->entry_text_.clear();
+}
+
+void LiveView::drawEntry(cv::Mat& image) const
+{
+    if (!this->entry_open_)
+        return;
+
+    // Centred horizontally and a third of the way down, which keeps it clear of both the HUD plate at the top
+    // and the histogram at the bottom.
+    const int width = std::min(460, image.cols - 40);
+    const int height = 68;
+    const cv::Rect box((image.cols - width) / 2, image.rows / 3, width, height);
+    const cv::Rect clipped = box & cv::Rect(0, 0, image.cols, image.rows);
+    if (clipped.width <= 0 || clipped.height <= 0)
+        return;
+
+    cv::Mat area = image(clipped);
+    cv::Mat plate(area.size(), area.type(), cv::Scalar(26, 26, 26));
+    cv::addWeighted(plate, 0.90, area, 0.10, 0.0, area);
+    cv::rectangle(image, clipped, cv::Scalar(200, 200, 200), 1, cv::LINE_AA);
+
+    const int left = box.x + 12;
+    cv::putText(image, this->entry_label_, cv::Point(left, box.y + 22),
+                cv::FONT_HERSHEY_SIMPLEX, 0.46, cv::Scalar(210, 210, 210), 1, cv::LINE_AA);
+
+    // A caret, so an empty field still looks like one that is waiting for input rather than one that is broken.
+    const std::string shown = this->entry_text_ + "_";
+    cv::putText(image, shown, cv::Point(left, box.y + 44),
+                cv::FONT_HERSHEY_SIMPLEX, 0.62, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+
+    cv::putText(image, this->entry_hint_ + "   [Enter] set   [Esc] cancel", cv::Point(left, box.y + 60),
+                cv::FONT_HERSHEY_SIMPLEX, 0.36, cv::Scalar(160, 160, 160), 1, cv::LINE_AA);
+}
+
+void LiveView::showExposureOnSlider(long long microseconds)
+{
+    if (!this->has_exposure_slider_)
+        return;
+
+    // Suppressed across the WHOLE thing, band changes included. The camera has already been told what to do by
+    // whoever typed the value; this only moves the widget to agree, and any clamp along the way is scaffolding
+    // rather than a request.
+    sliders().suppress = true;
+
+    // A typed value may belong to another band, so the band follows the value rather than clamping it.
+    const int wanted = bandForExposure(microseconds);
+    while (sliders().exposure_band != wanted)
+        this->cycleExposureBand();
+
+    cv::setTrackbarPos(kExposureBarName, this->title_, exposureToSlider(microseconds));
+    sliders().suppress = false;
 }
 
 void LiveView::addGainSlider(long long maximum, long long current)
@@ -376,7 +619,7 @@ void LiveView::syncSliders(const ModelState& state)
     // would come straight back as a user request and fight whatever the user is doing.
     s.suppress = true;
     if (this->has_exposure_slider_ && !s.exposure_moved)
-        cv::setTrackbarPos("exposure (log)", this->title_, exposureToSlider(state.exposure_us));
+        cv::setTrackbarPos(kExposureBarName, this->title_, exposureToSlider(state.exposure_us));
     if (this->has_gain_slider_ && !s.gain_moved)
         cv::setTrackbarPos("gain", this->title_, static_cast<int>(state.gain));
     s.suppress = false;
@@ -439,6 +682,10 @@ const cv::Mat& LiveView::compose(const cv::Mat& image, const ModelState& state, 
         this->drawHistogram(this->canvas_, overlay.stats);
     if (this->menu_open_)
         this->drawMenu(this->canvas_);
+
+    // Last, and outside the menu's own condition: a value being typed must stay legible even with
+    // the menu open behind it.
+    this->drawEntry(this->canvas_);
 
     return this->canvas_;
 }

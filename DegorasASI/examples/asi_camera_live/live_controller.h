@@ -159,6 +159,27 @@ private:
     LiveView& view_;     ///< Where input comes from, and what display toggles act on.
     int shots_;                  ///< Number of files written so far, used to name the next one.
     bool fine_;                  ///< Whether a reticle nudge uses the fine step instead of the coarse one.
+
+    // THE GRAB OFFSET, which is why clicking a reticle no longer moves it. The drag used to snap the centre to
+    // the cursor, so merely selecting a mark -- which is what you do before locking it -- shifted it by however
+    // far the click landed from its centre, up to the grab radius. Holding the offset means a press with no
+    // motion moves nothing at all, and a drag moves the mark exactly as far as the pointer travels.
+    /// @brief What the typed box is currently editing, so its value goes to the right control.
+    enum class EntryTarget
+    {
+        NONE,
+        EXPOSURE,   ///< Value read as milliseconds, because that is the unit the HUD and the slider both use.
+        GAIN,       ///< Value read as a plain number, clamped to what the camera reports.
+    };
+
+    /// @brief Sends a finished typed value to the camera, if one is ready. Cheap and safe to call every key.
+    void applyEntry();
+
+    EntryTarget entry_target_;   ///< Which control the open box belongs to.
+
+    bool grabbed_;               ///< Whether the current press began on the selected reticle.
+    double grab_dx_;             ///< Sensor-x distance from the cursor to the reticle centre at the press.
+    double grab_dy_;             ///< Sensor-y distance from the cursor to the reticle centre at the press.
     std::string reticle_file_;   ///< Where the reticles are persisted, or empty for not at all.
 
     /// The actions behind the labels the view is showing, in the same order. Kept here rather than in the view
