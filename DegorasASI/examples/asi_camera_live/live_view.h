@@ -144,14 +144,14 @@ public:
 
     /**
      * @brief Moves the exposure slider to the next band, wrapping round.
-     * @note The slider covers one band at a time -- 1 to 100 ms, 0.1 to 2 s, 2 to 60 s -- because the camera's
+     * @note The slider covers one band at a time -- 1 ms to 2 s, then 2 to 60 s -- because the camera's
      *       own range spans microseconds to over half an hour and a single bar across it cannot be aimed. Each
      *       band is clamped to what the camera actually accepts, so a shorter-range model simply gets shorter
      *       bands. The typed box reaches anything a band does not.
      */
     void cycleExposureBand();
 
-    /// @brief The current band's name, for the HUD: "1-100 ms", "0.1-2 s" or "2-60 s".
+    /// @brief The current band's name, for the HUD: "1 ms - 2 s" or "2 - 60 s".
     std::string exposureBandName() const;
 
     /// @brief Smallest exposure the camera reported, in microseconds. Zero before addExposureSlider() has run.

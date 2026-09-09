@@ -839,7 +839,7 @@ void LiveController::printKeys() const
         "  1 / 2          exposure -10% / +10%   (multiplicative: a fixed step is useless across us..s)\n"
         "  E              type an exposure, in milliseconds, into a box\n"
         "  G              type a gain into a box\n"
-        "  W              exposure slider band: 1-100 ms -> 0.1-2 s -> 2-60 s -> round again\n"
+        "  W              exposure slider band: 1 ms - 2 s  <->  2 - 60 s\n"
         "  3 / 4          gain     -10  / +10\n"
         "  5 / 6          WB red   -1   / +1     (colour cameras only)\n"
         "  7 / 8          WB blue  -1   / +1\n"

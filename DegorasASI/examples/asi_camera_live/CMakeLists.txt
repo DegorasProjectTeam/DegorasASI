@@ -58,12 +58,14 @@ target_link_libraries(Example_asi_camera_live PRIVATE
 # at work and both were measured rather than assumed:
 #
 #  1. THE WINDOWS LOADER searches the executable's own directory BEFORE anything on PATH. That is the only reliable
-#     way to guarantee which Qt gets loaded. This machine has two complete Qt 6.11.1 installations -- vcpkg's, which
-#     OpenCV's highgui is built against, and MSYS2's, which Qt Creator pulls in -- with identical DLL names and
-#     identical version numbers, so picking the wrong one is SILENT. Relying on PATH order works right up until
-#     something reorders PATH.
+#     way to guarantee which Qt gets loaded. One of this project's environments has two complete Qt 6.11.1
+#     installations -- vcpkg's, which its OpenCV highgui is built against, and MSYS2's, which Qt Creator pulls in
+#     -- with identical DLL names and identical version numbers, so picking the wrong one is SILENT. Relying on
+#     PATH order works right up until something reorders PATH.
 #
-#  2. QT'S PLUGIN SEARCH is anchored to the location of Qt6Core.dll, because vcpkg builds Qt relocatable: it derives
+#  2. QT'S PLUGIN SEARCH -- WHEN THIS highgui USES QT AT ALL, which is detected below rather than assumed, because
+#     the same vcpkg port resolves to a Qt backend in one of this project's environments and to the plain Win32
+#     one in the other. Qt's search is anchored to the location of Qt6Core.dll, because vcpkg builds Qt relocatable: it derives
 #     its prefix from wherever that DLL turns out to live and then looks for <prefix>/Qt6/plugins. So copying the Qt
 #     DLLs next to the executable MOVES the plugin search to <exedir>/.. -- where there is no plugin tree -- and the
 #     only path left is the executable's own directory. Deploy the DLLs and forget the plugin and the platform
@@ -80,9 +82,69 @@ target_link_libraries(Example_asi_camera_live PRIVATE
 
 set(_LIVE_DEPLOY_DIR "$<TARGET_FILE_DIR:Example_asi_camera_live>")
 
-# The Qt platform plugin first, into <exedir>/platforms/. Qt exports it as an imported target, so its location is
-# whatever Qt was actually found -- no path guessing, and it follows a change of prefix by itself.
-if(TARGET Qt6::QWindowsIntegrationPlugin)
+# DOES THIS highgui ACTUALLY USE QT? Ask the binary, because "Qt6 is available" and "highgui needs Qt6" are
+# different questions and only the second one requires a platform plugin. This block used to test the first and
+# warn about the second, which produced a confident false alarm on any Win32-backed build -- and then somebody
+# copied qwindows.dll to make the warning stop, on a build that never wanted it.
+#
+# The two environments this project targets genuinely disagree, so this is not hypothetical. Measured from the
+# import tables of the same vcpkg port at the same version:
+#     ucrt64  -> libopencv_highgui4.dll imports Qt6Core, Qt6Gui, Qt6Widgets, Qt6OpenGLWidgets, Qt6Test
+#     clang64 -> it imports GDI32, USER32, COMDLG32 and OPENGL32, and no Qt at all
+# It follows opencv4's feature resolution rather than the toolchain, so neither answer can be assumed.
+#
+# READ WITH file(STRINGS) RATHER THAN file(GET_RUNTIME_DEPENDENCIES), which was the first attempt and was wrong
+# for this job even though it worked. CMake warns "you have used file(GET_RUNTIME_DEPENDENCIES) in project mode,
+# this is probably not what you intended" -- an author warning that cannot be suppressed from inside the project
+# -- and it also wants CMP0207 set. Trading one spurious warning for two is not a fix.
+#
+# A PE import table stores its dependency names as plain ASCII, so the names come straight out of the file with
+# no tool, no policy and no build-time step. The regex is anchored at both ends so it matches a DLL NAME and not
+# a mention of one in some diagnostic string.
+set(_LIVE_HIGHGUI_USES_QT FALSE)
+set(_LIVE_HIGHGUI_DLL "")
+
+if(TARGET opencv_highgui)
+    get_target_property(_LIVE_HG_CFGS opencv_highgui IMPORTED_CONFIGURATIONS)
+    foreach(_cfg IN LISTS _LIVE_HG_CFGS)
+        get_target_property(_LIVE_HG_TRY opencv_highgui IMPORTED_LOCATION_${_cfg})
+        if(_LIVE_HG_TRY AND EXISTS "${_LIVE_HG_TRY}")
+            set(_LIVE_HIGHGUI_DLL "${_LIVE_HG_TRY}")
+            break()
+        endif()
+    endforeach()
+    if(NOT _LIVE_HIGHGUI_DLL)
+        get_target_property(_LIVE_HG_TRY opencv_highgui IMPORTED_LOCATION)
+        if(_LIVE_HG_TRY AND EXISTS "${_LIVE_HG_TRY}")
+            set(_LIVE_HIGHGUI_DLL "${_LIVE_HG_TRY}")
+        endif()
+    endif()
+endif()
+
+if(_LIVE_HIGHGUI_DLL)
+    file(STRINGS "${_LIVE_HIGHGUI_DLL}" _LIVE_HG_QT_IMPORTS REGEX "^([Ll]ib)?[Qq]t6[A-Za-z]*\\.dll$")
+    list(REMOVE_DUPLICATES _LIVE_HG_QT_IMPORTS)
+    if(_LIVE_HG_QT_IMPORTS)
+        set(_LIVE_HIGHGUI_USES_QT TRUE)
+    endif()
+endif()
+
+# The Qt platform plugin, into <exedir>/platforms/, and only when highgui is the build that needs one. Qt exports
+# it as an imported target, so its location is whatever Qt was actually found -- no path guessing, and it follows
+# a change of prefix by itself.
+if(NOT _LIVE_HIGHGUI_USES_QT)
+    set(_LIVE_PLUGIN "")
+    if(_LIVE_HIGHGUI_DLL)
+        message(STATUS "[DEGORAS] asi_camera_live: highgui does not link Qt, so no platform plugin is deployed.")
+    else()
+        # Could not read the binary at all, so neither answer is available. Say which of the two situations this
+        # is, because "no plugin needed" and "could not tell" call for different reactions.
+        message(WARNING "[DEGORAS] asi_camera_live: could not locate highgui's binary, so whether it needs the Qt "
+                        "platform plugin is unknown and none was deployed. If the first window HANGS, that is why: "
+                        "copy Qt's qwindows.dll into platforms/ beside the executable.")
+    endif()
+elseif(TARGET Qt6::QWindowsIntegrationPlugin)
+    message(STATUS "[DEGORAS] asi_camera_live: highgui links Qt (${_LIVE_HG_QT_IMPORTS}); deploying its platform plugin.")
     set(_LIVE_PLUGIN "${_LIVE_DEPLOY_DIR}/platforms/qwindows.dll")
     add_custom_command(TARGET Example_asi_camera_live POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "${_LIVE_DEPLOY_DIR}/platforms"
@@ -91,9 +153,9 @@ if(TARGET Qt6::QWindowsIntegrationPlugin)
         VERBATIM)
 else()
     set(_LIVE_PLUGIN "")
-    message(WARNING "[DEGORAS] asi_camera_live: Qt6::QWindowsIntegrationPlugin not found. OpenCV's highgui is built "
-                    "against Qt here, so without the platform plugin beside the executable it will HANG on the "
-                    "first window it opens. Check that find_package(OpenCV) pulled Qt6 in.")
+    message(WARNING "[DEGORAS] asi_camera_live: this highgui LINKS Qt but Qt6::QWindowsIntegrationPlugin was not "
+                    "found, so without the platform plugin beside the executable it will HANG on the first window "
+                    "it opens. Check that find_package(OpenCV) pulled Qt6 in.")
 endif()
 
 # Then the DLL closure, resolved from the binaries' own import tables. Search order = CMAKE_PREFIX_PATH order, which

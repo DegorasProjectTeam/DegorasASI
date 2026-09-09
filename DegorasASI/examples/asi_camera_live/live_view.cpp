@@ -77,14 +77,21 @@ struct ExposureBand
     long long max_us;
 };
 
+// TWO BANDS, AND THE FIRST ONE IS WIDE ON PURPOSE. The first cut had three -- 1-100 ms, 0.1-2 s, 2-60 s -- and
+// that was wrong in practice: the band is chosen to contain the CURRENT exposure, the default exposure is 30 ms,
+// so the slider opened in the 1-100 ms band and could not be dragged past a tenth of a second. Reaching two
+// seconds meant knowing to press W first, which is exactly the sort of thing nobody should have to know.
+//
+// One millisecond per step across 1 ms to 2 s is 2000 positions, so nothing is lost at the short end either:
+// any value in that range is still settable exactly. The long band stays separate because 2 to 60 seconds at
+// millisecond resolution would be 58000 positions of which only a handful are useful.
 const ExposureBand kExposureBands[] = {
-    { "1-100 ms",  1000LL,     100000LL   },
-    { "0.1-2 s",   100000LL,   2000000LL  },   // the default: the band this example is normally used in
-    { "2-60 s",    2000000LL,  60000000LL },
+    { "1 ms - 2 s",  1000LL,     2000000LL  },   // where this example lives
+    { "2 - 60 s",    2000000LL,  60000000LL },
 };
 
 constexpr int kExposureBandCount = static_cast<int>(sizeof(kExposureBands) / sizeof(kExposureBands[0]));
-constexpr int kDefaultExposureBand = 1;
+constexpr int kDefaultExposureBand = 0;
 
 /// highgui addresses a trackbar by its label, so the three call sites share one spelling.
 const char* const kExposureBarName = "exposure ms";
