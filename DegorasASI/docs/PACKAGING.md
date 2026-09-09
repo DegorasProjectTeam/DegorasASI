@@ -18,7 +18,7 @@ standalone install and a **vcpkg** overlay port. This document covers both.
 ## 1. Standalone install (no vcpkg)
 
 Configure, build and install with the provided presets. They read three variables the DegorasSLR environment
-exports — `MINGW_ROOT`, `DEVSYSTEM_BUILDTREES` and `DEVSYSTEM_DEPLOYS` — and are reported as disabled if any is
+exports — `DEVSYSTEM_TOOLCHAIN_ROOT`, `DEVSYSTEM_BUILDTREES` and `DEVSYSTEM_DEPLOYS` — and are reported as disabled if
 missing, so a build never lands somewhere unintended:
 
 ```sh
@@ -97,7 +97,7 @@ vcpkg install degoras-asi \
 { "dependencies": ["degoras-asi"] }
 ```
 …invoked with the same `--overlay-ports` / `--overlay-triplets` (or configured in `vcpkg-configuration.json`), and
-`MINGW_ROOT` exported in the environment.
+`DEVSYSTEM_TOOLCHAIN_ROOT` exported in the environment.
 
 The port runs `vcpkg_cmake_configure` → `vcpkg_cmake_install` → `vcpkg_cmake_config_fixup(PACKAGE_NAME degorasasi
 CONFIG_PATH lib/cmake/DegorasASI)`, which relocates the CMake package files to `share/degorasasi/` and merges the

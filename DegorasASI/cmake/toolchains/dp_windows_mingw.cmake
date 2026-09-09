@@ -1,10 +1,11 @@
 #
-# Windows toolchain for MSYS2 MinGW prefixes.
+# Windows toolchain for MSYS2 prefixes.
 # Requires environment variable:
-#   MINGW_ROOT  -> the MSYS2 prefix. The DegorasSLR environment exports it (${MSYS2_ROOT}/${MSYS2_ENV});
-#                  elsewhere set it yourself to a ucrt64, mingw64 or clang64 prefix.
+#   DEVSYSTEM_TOOLCHAIN_ROOT -> the MSYS2 prefix. The DegorasSLR environment exports it; elsewhere set it
+#                               yourself to a ucrt64, mingw64 or clang64 prefix.
 # Honoured when present:
-#   VCPKG_ROOT + VCPKG_DEFAULT_TRIPLET -> the package prefix is searched AHEAD of the MinGW one. See below.
+#   DEVSYSTEM_TOOLCHAIN                -> "gcc" or "clang"; picks the compiler driver. See below.
+#   VCPKG_ROOT + VCPKG_DEFAULT_TRIPLET -> the package prefix is searched AHEAD of the toolchain one. See below.
 #
 # This is the project's REFERENCE (validated) Windows toolchain, not a requirement: DegorasASI itself imposes no
 # platform or toolchain lock, because the ZWO ASI Camera SDK is shipped for Windows, Linux, macOS and Android.
@@ -15,16 +16,29 @@
 # .bat tool wrappers a real cross-build would ship and never for the .exe that is actually installed. Leaving it unset
 # also lets CMake detect CMAKE_SYSTEM_PROCESSOR by itself, which it gets right (x86_64).
 
-if(NOT DEFINED ENV{MINGW_ROOT} OR "$ENV{MINGW_ROOT}" STREQUAL "")
-    message(FATAL_ERROR "[CMAKE] dp_windows_mingw.cmake: MINGW_ROOT is not set. It names the MSYS2 prefix "
-                        "holding gcc; the DegorasSLR environment exports it. Enter that environment, or set it.")
+if(NOT DEFINED ENV{DEVSYSTEM_TOOLCHAIN_ROOT} OR "$ENV{DEVSYSTEM_TOOLCHAIN_ROOT}" STREQUAL "")
+    message(FATAL_ERROR "[CMAKE] dp_windows_mingw.cmake: DEVSYSTEM_TOOLCHAIN_ROOT is not set. It names the "
+                        "MSYS2 prefix holding the compiler; the DegorasSLR environment exports it. Enter that "
+                        "environment, or set it. It replaced MINGW_ROOT, which named the same directory, so an "
+                        "environment generated before the rename wants step 2 of DrivEnv-Win re-run.")
 endif()
 
-set(_PFX "$ENV{MINGW_ROOT}")
+set(_PFX "$ENV{DEVSYSTEM_TOOLCHAIN_ROOT}")
 
-# Compilers.
-set(CMAKE_C_COMPILER   "${_PFX}/bin/gcc.exe" CACHE FILEPATH "MSYS2 GCC (C)"   FORCE)
-set(CMAKE_CXX_COMPILER "${_PFX}/bin/g++.exe" CACHE FILEPATH "MSYS2 G++ (C++)" FORCE)
+# COMPILER DRIVER. gcc.exe and g++.exe are right on ucrt64 and mingw64, and they also WORK on clang64, where
+# MSYS2 ships them as byte-identical copies of clang -- which is why this named them unconditionally. Those
+# copies are exactly what makes the family undiscoverable, though: nothing about the prefix says which compiler
+# you are getting, and a configure log reading "GNU" for a clang build is a lie that costs an afternoon. So when
+# the environment states the family, believe it and invoke the real driver. Unstated, the old behaviour stands.
+set(_CC  "gcc.exe")
+set(_CXX "g++.exe")
+if("$ENV{DEVSYSTEM_TOOLCHAIN}" STREQUAL "clang" AND EXISTS "${_PFX}/bin/clang.exe")
+    set(_CC  "clang.exe")
+    set(_CXX "clang++.exe")
+endif()
+
+set(CMAKE_C_COMPILER   "${_PFX}/bin/${_CC}"  CACHE FILEPATH "MSYS2 C compiler"   FORCE)
+set(CMAKE_CXX_COMPILER "${_PFX}/bin/${_CXX}" CACHE FILEPATH "MSYS2 C++ compiler" FORCE)
 
 # Resource compiler (optional, but common for Windows builds).
 if(EXISTS "${_PFX}/bin/windres.exe")
@@ -41,20 +55,20 @@ set(CMAKE_FIND_PACKAGE_PREFER_CONFIG ON CACHE BOOL "" FORCE)
 # ----------------------------------------------------------------------------------------------------------------------
 # SEARCH ORDER: PACKAGES BEFORE THE COMPILER PREFIX
 #
-# This file used to do `list(PREPEND CMAKE_PREFIX_PATH "${_PFX}")`, which put the MinGW prefix ahead of everything.
-# That was wrong, and it broke find_package(OpenCV) outright. The MinGW prefix supplies the COMPILER; the packages
+# This file used to do `list(PREPEND CMAKE_PREFIX_PATH "${_PFX}")`, which put the toolchain prefix ahead of it all.
+# That was wrong, and it broke find_package(OpenCV) outright. The toolchain prefix supplies the COMPILER; the packages
 # this project consumes come from vcpkg, and when a package exists in both prefixes the two are NOT interchangeable.
 #
 # The failure it caused, measured rather than guessed: MSYS2 ships a Qt6 (Qt Creator pulls it in) that provides every
 # component OpenCV asks for EXCEPT Core5Compat. vcpkg's OpenCV runs find_dependency(Qt6 COMPONENTS ... Core5Compat)
 # from inside OpenCVModules.cmake because its highgui is built against Qt. With the MinGW prefix searched first, that
-# resolved to MSYS2's Qt6, failed on the missing component, and -- because the failure lands inside OpenCV's own
+# resolved to MSYS2's own Qt6, failed on the missing component, and -- as the failure lands inside OpenCV's own
 # cmake_policy(PUSH) block -- surfaced as the thoroughly misleading:
 #
 #     CMake Error in .../OpenCVModules.cmake: cmake_policy PUSH without matching POP
 #
 # Note that CMAKE_PREFIX_PATH is searched BEFORE the prefixes CMake derives from PATH entries ending in /bin, which is
-# how the vcpkg prefix was being found at all. Merely appending the MinGW prefix instead of prepending it therefore
+# how the vcpkg prefix was being found at all. Merely appending the toolchain prefix instead of prepending it therefore
 # fixes nothing: the vcpkg prefix has to be named here, explicitly, and first.
 if(DEFINED ENV{VCPKG_ROOT} AND DEFINED ENV{VCPKG_DEFAULT_TRIPLET}
    AND NOT "$ENV{VCPKG_ROOT}" STREQUAL "" AND NOT "$ENV{VCPKG_DEFAULT_TRIPLET}" STREQUAL "")

@@ -25,16 +25,16 @@
           { "type": "equals",    "lhs": "${hostSystemName}",              "rhs": "Windows" },
           { "type": "notEquals", "lhs": "$env{DEVSYSTEM_BUILDTREES}",     "rhs": "" },
           { "type": "notEquals", "lhs": "$env{DEVSYSTEM_DEPLOYS}",        "rhs": "" },
-          { "type": "notEquals", "lhs": "$env{MINGW_ROOT}",               "rhs": "" },
+          { "type": "notEquals", "lhs": "$env{DEVSYSTEM_TOOLCHAIN_ROOT}",  "rhs": "" },
           { "type": "notEquals", "lhs": "$env{VCPKG_DEFAULT_TRIPLET}",    "rhs": "" }
         ]
       },
-      "cmakeExecutable": "$env{MINGW_ROOT}/bin/cmake.exe",
+      "cmakeExecutable": "$env{DEVSYSTEM_TOOLCHAIN_ROOT}/bin/cmake.exe",
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/dp_windows_mingw.cmake"
       },
       "environment": {
-        "PATH": "$env{MINGW_ROOT}/bin;$penv{PATH}"
+        "PATH": "$env{DEVSYSTEM_TOOLCHAIN_ROOT}/bin;$penv{PATH}"
       }
     },
 
@@ -95,7 +95,7 @@
           "debugger": {
             "DisplayName": "DP-UCRT64-GDB",
             "Abis": [ "x86-windows-msys-pe-64bit" ],
-            "Binary": "$env{MINGW_ROOT}/bin/gdb.exe",
+            "Binary": "$env{DEVSYSTEM_TOOLCHAIN_ROOT}/bin/gdb.exe",
             "EngineType": 1,
             "Version": "17.2"
           }

@@ -110,9 +110,11 @@ or a whole group via a module aggregator: `#include <DegorasASI/Modules/Devices>
 
 ### Prerequisites
 
-* An MSYS2 MinGW prefix providing GCC, Ninja and (optionally) windres. UCRT64 is the reference prefix.
+* An MSYS2 prefix providing a C++17 compiler, Ninja and (optionally) windres. UCRT64 (GCC) is the reference
+  prefix; CLANG64 is also validated.
 * CMake >= 3.21.
-* The DegorasSLR environment variables `MINGW_ROOT`, `DEVSYSTEM_BUILDTREES` and `DEVSYSTEM_DEPLOYS`. The
+* The DegorasSLR environment variables `DEVSYSTEM_TOOLCHAIN_ROOT`, `DEVSYSTEM_BUILDTREES` and
+  `DEVSYSTEM_DEPLOYS`. The
   devdrive launcher exports all three; outside it, export them yourself or copy
   `CMakeUserPresets.json.example` and override them there.
 * A ZWO ASI camera and its driver installed, to run anything that touches hardware.
