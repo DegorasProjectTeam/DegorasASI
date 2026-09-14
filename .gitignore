@@ -30,3 +30,14 @@ Thumbs.db
 # documentation. Only the SDK BUILD PAYLOAD lives under DegorasASI/thirdparty/ASI/ and is tracked, mirroring how the
 # reference project vendors thirdparty/Thorlabs/. Re-populate this directory from the official SDK download if needed.
 reference/
+
+# Capture output the examples write to their WORKING DIRECTORY.
+#
+# Every example that grabs a frame writes it beside wherever it was launched from, so running one from the
+# repository root drops a few megabytes of .pgm and .bmp into the source tree. Six of them reached a commit
+# that way -- 13.8 MB -- which is what this exists to stop. Launch the examples from their build directory and
+# the files land there instead, which is where they belong.
+asi_frame_*.pgm
+asi_frame_*.bmp
+asi_stream_*.bmp
+shot.bmp
