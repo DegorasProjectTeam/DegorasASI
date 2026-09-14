@@ -87,14 +87,34 @@ foreach(runtime_file ${ASI_RUNTIME_FILES})
         "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/")
 endforeach()
 
-# MinGW C++ runtime (resolved from the active compiler's bin directory) so binaries launch without MSYS2 on PATH.
+# MSYS2 C++ runtime (resolved from the active compiler's bin directory) so binaries launch without MSYS2 on PATH.
+#
+# THE LIST COVERS BOTH RUNTIMES, and it has to. It used to name GCC's three only, which is right on UCRT64 and
+# MINGW64 and silently wrong on CLANG64: there the C++ runtime is libc++.dll and there is no libstdc++-6.dll to
+# find. Two of the three names simply did not exist, the third (libwinpthread-1.dll) did, so the loop appeared to
+# work -- it copied something -- while leaving out the one library that actually matters.
+#
+# Measured, with PATH cut back to C:\Windows\System32;C:\Windows: a test executable exited 0xC0000135
+# (STATUS_DLL_NOT_FOUND) and dropping libc++.dll beside it fixed it. This library escaped notice for a while only
+# because the OpenCV example's own deploy step happens to leave libc++.dll in the shared bin/; isolate any other
+# executable and it fails the same way.
+#
+# NO COMPILER DETECTION, deliberately. if(EXISTS) already selects: each subsystem has the names it has, and a
+# name that is not there costs nothing. That keeps this correct for ucrt64, mingw64, clang64 and anything else
+# MSYS2 ships without this file having to know which is in play. libunwind.dll is listed because CLANG64 ships
+# one; it is not in the import closure of anything built here today, and staging it is cheap insurance against a
+# build that links it dynamically later.
+#
+# The import closures behind those names, measured on both toolchains:
+#     ucrt64   -> libstdc++-6.dll, libgcc_s_seh-1.dll, libwinpthread-1.dll
+#     clang64  -> libc++.dll
 if(MINGW)
-    get_filename_component(MINGW_BIN_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
-    foreach(runtime_dll libstdc++-6.dll libgcc_s_seh-1.dll libwinpthread-1.dll)
-        if(EXISTS "${MINGW_BIN_DIR}/${runtime_dll}")
+    get_filename_component(MSYS2_BIN_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    foreach(runtime_dll libstdc++-6.dll libgcc_s_seh-1.dll libwinpthread-1.dll libc++.dll libunwind.dll)
+        if(EXISTS "${MSYS2_BIN_DIR}/${runtime_dll}")
             execute_process(
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${MINGW_BIN_DIR}/${runtime_dll}"
+                "${MSYS2_BIN_DIR}/${runtime_dll}"
                 "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${runtime_dll}")
         endif()
     endforeach()
